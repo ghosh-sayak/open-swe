@@ -1029,3 +1029,156 @@ docker exec -it daytona-runner-1 sh -c 'curl -s http://registry:6000/v2/_catalog
 docker compose -f searxng/docker-compose.yml logs -f core   # SearXNG logs
 docker logs daytona-runner-1 -f                              # Daytona runner logs
 ```
+---
+
+## Staying Up to Date with Upstream open-swe
+
+### The strategy
+
+```
+main              → always mirrors langchain-ai/open-swe exactly
+local/self-hosted → your branch with all customizations on top
+```
+
+You never commit your changes to `main`. Your customizations stay on `local/self-hosted` and get rebased onto `main` whenever upstream ships new commits.
+
+---
+
+### One-time setup (already done — kept here for reference)
+
+```bash
+# Add the original repo as "upstream"
+git remote add upstream https://github.com/langchain-ai/open-swe.git
+
+# Point origin to your fork
+git remote set-url origin https://github.com/ghosh-sayak/open-swe.git
+
+# Verify
+git remote -v
+# origin    https://github.com/ghosh-sayak/open-swe.git (fetch)
+# upstream  https://github.com/langchain-ai/open-swe.git (fetch)
+
+# Create your customization branch from main
+git checkout -b local/self-hosted
+
+# Commit all your changes
+git add Makefile agent/integrations/daytona.py agent/server.py \
+  agent/tools/web_search.py agent/utils/langsmith.py \
+  pyproject.toml uv.lock .gitignore \
+  customization/ sandbox-image/ scripts/create_daytona_snapshot.py
+
+git commit -m "chore: self-hosted setup (Daytona + SearXNG, no LangSmith)"
+
+# Push both branches to your fork
+git push origin main
+git push origin local/self-hosted
+```
+
+---
+
+### Daily workflow — pulling upstream updates
+
+**Step 1: Check if upstream has new commits in your files**
+
+```bash
+git fetch upstream
+
+git log main..upstream/main --oneline -- \
+  agent/server.py \
+  agent/tools/web_search.py \
+  agent/utils/langsmith.py \
+  agent/integrations/daytona.py \
+  pyproject.toml \
+  Makefile
+```
+
+If the output is empty — nothing to do. If commits appear, continue to Step 2.
+
+**Step 2: Preview what upstream changed in your files**
+
+```bash
+git diff main upstream/main -- \
+  agent/server.py \
+  agent/tools/web_search.py \
+  agent/utils/langsmith.py \
+  agent/integrations/daytona.py \
+  pyproject.toml \
+  Makefile
+```
+
+Read the diff carefully before proceeding — especially changes to `agent/server.py` and `agent/integrations/daytona.py`.
+
+**Step 3: Sync main with upstream**
+
+```bash
+git checkout main
+git merge upstream/main --ff-only
+```
+
+`--ff-only` ensures `main` never gets your own commits. If it fails, something went wrong — stop and investigate before continuing.
+
+**Step 4: Rebase your customizations onto the new main**
+
+```bash
+git checkout local/self-hosted
+git rebase main
+```
+
+**Step 5: Resolve conflicts if any**
+
+Git pauses on each conflict. For each conflicted file:
+
+```bash
+# See which files have conflicts
+git status
+
+# For each conflicted file — open it, find conflict markers (<<<, ===, >>>)
+# Decide what to keep, edit the file, remove the markers
+
+# Mark resolved
+git add <resolved-file>
+
+# Continue
+git rebase --continue
+
+# If something goes badly wrong and you want to start over
+git rebase --abort
+```
+
+**Known conflict patterns for this setup:**
+
+| File | What to do |
+|---|---|
+| `agent/utils/langsmith.py` | Accept upstream version — it already has our fix |
+| `agent/tools/web_search.py` | Keep your SearXNG version entirely — discard upstream's Exa code |
+| `agent/server.py` | Keep your Daytona `elif` blocks, accept upstream's new additions around them |
+| `pyproject.toml` | Accept upstream's version bumps AND keep your `exa-py` removal |
+| `Makefile` | Keep your changes — upstream rarely touches this |
+
+**Step 6: Push updated branches**
+
+```bash
+git push origin main
+git push origin local/self-hosted
+```
+
+---
+
+### Branch naming for future work
+
+| What you're doing | Branch to use |
+|---|---|
+| Infrastructure customization (sandbox, search, auth) | Commit directly to `local/self-hosted` |
+| New feature or experiment | Create `feature/xxx` off `local/self-hosted`, merge back when done |
+| Fix to contribute back to upstream | Create `fix/xxx` off `main`, open PR to `langchain-ai/open-swe` |
+
+---
+
+### Your fork on GitHub
+
+| Branch | Purpose |
+|---|---|
+| `main` | Clean mirror of `langchain-ai/open-swe` — never commit here directly |
+| `local/self-hosted` | All your customizations — this is your working branch |
+
+> **Ignore** the GitHub prompt to open a pull request when you push `local/self-hosted` — that is GitHub suggesting you PR your changes into `langchain-ai/open-swe`. You do not want to do that.
