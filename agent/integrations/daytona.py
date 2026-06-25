@@ -3,8 +3,10 @@ import os
 from daytona import CreateSandboxFromSnapshotParams, Daytona, DaytonaConfig
 from langchain_daytona import DaytonaSandbox
 
-DEFAULT_DAYTONA_SANDBOX_SNAPSHOT = "daytonaio/sandbox:0.6.0"
+# DEFAULT_DAYTONA_SANDBOX_SNAPSHOT = "daytonaio/sandbox:0.6.0"
+DEFAULT_DAYTONA_SANDBOX_SNAPSHOT = "open-swe-sandbox"
 DAYTONA_SANDBOX_SNAPSHOT_ENV = "DAYTONA_SANDBOX_SNAPSHOT"
+
 
 
 def _get_daytona_sandbox_params() -> CreateSandboxFromSnapshotParams:

@@ -237,6 +237,28 @@ async def _create_sandbox_with_proxy(
             permissions=None if github_proxy_token else RUNTIME_PROXY_TOKEN_PERMISSIONS,
         )
 
+    elif sandbox_type == "daytona":
+        token, _ = await _resolve_proxy_token(github_proxy_token)
+        if not token:
+            msg = "Cannot configure git auth: GitHub App installation token is unavailable"
+            logger.error(msg)
+            raise ValueError(msg)
+        # No GitHub proxy on this provider, so write real credentials into the sandbox.
+        # The agent always runs `GH_TOKEN=dummy gh`; the image ships a gh wrapper that
+        # strips that dummy token so gh falls back to the hosts.yml token written here.
+        setup_commands = " && ".join([
+            # git credential rewrite for plain git (and the git sub-step of `gh repo clone`)
+            f"git config --global url.'https://x-access-token:{token}@github.com/'.insteadOf 'https://github.com/'",
+            # real token for gh's API calls
+            "mkdir -p /root/.config/gh",
+            f"printf 'github.com:\\n  oauth_token: {token}\\n  git_protocol: https\\n  user: x-access-token\\n' > /root/.config/gh/hosts.yml",
+        ])
+        await asyncio.to_thread(
+            sandbox_backend.execute,
+            setup_commands
+        )
+        logger.info("Configured git and gh credentials in Daytona sandbox %s", sandbox_backend.id)
+
     return sandbox_backend
 
 
@@ -248,26 +270,41 @@ async def _refresh_github_proxy(
     github_proxy_repositories: Sequence[str] | None = None,
 ) -> None:
     """Refresh GitHub proxy credentials for reused LangSmith sandboxes."""
-    if os.getenv("SANDBOX_TYPE", "langsmith") != "langsmith":
-        return
+    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
 
-    token, expires_at = await _resolve_proxy_token(github_proxy_token)
-    if not token:
-        logger.warning(
-            "Skipping GitHub proxy refresh for sandbox %s: installation token unavailable",
-            sandbox_backend.id,
+    if sandbox_type == "langsmith":
+        token, expires_at = await _resolve_proxy_token(github_proxy_token)
+        if not token:
+            logger.warning(
+                "Skipping GitHub proxy refresh for sandbox %s: installation token unavailable",
+                sandbox_backend.id,
+            )
+            return
+
+        current_backend = unwrap_sandbox_backend(sandbox_backend)
+        await _start_langsmith_sandbox_if_needed(current_backend)
+        await asyncio.to_thread(_configure_github_proxy, current_backend.id, token)
+        record_proxy_token_expiry(thread_id, expires_at, repositories=github_proxy_repositories)
+
+    elif sandbox_type == "daytona":
+        token, _ = await _resolve_proxy_token(github_proxy_token)
+        if not token:
+            logger.warning(
+                "Skipping git credential refresh for Daytona sandbox %s: installation token unavailable",
+                sandbox_backend.id,
+            )
+            return
+        setup_commands = " && ".join([
+            f"git config --global url.'https://x-access-token:{token}@github.com/'.insteadOf 'https://github.com/'",
+            f"mkdir -p /root/.config/gh",
+            f"printf 'github.com:\\n  oauth_token: {token}\\n  git_protocol: https\\n  user: x-access-token\\n' > /root/.config/gh/hosts.yml",
+        ])
+        await asyncio.to_thread(
+            sandbox_backend.execute,
+            setup_commands
         )
+        logger.info("Refreshed git and gh credentials in Daytona sandbox %s", sandbox_backend.id)
         return
-
-    current_backend = unwrap_sandbox_backend(sandbox_backend)
-    await _start_langsmith_sandbox_if_needed(current_backend)
-    await asyncio.to_thread(_configure_github_proxy, current_backend.id, token)
-    record_proxy_token_expiry(
-        thread_id,
-        expires_at,
-        repositories=github_proxy_repositories,
-        permissions=None if github_proxy_token else RUNTIME_PROXY_TOKEN_PERMISSIONS,
-    )
 
 
 async def _refresh_github_proxy_or_recreate(
