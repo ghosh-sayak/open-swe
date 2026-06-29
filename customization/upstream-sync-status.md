@@ -162,13 +162,32 @@ git stash drop                    # clear the stash once fully resolved
 
 ---
 
-### Step 7 — Push `local/self-hosted` to your fork
+### Step 7 — Push the rebased branch to your fork
 
 ```bash
 git push origin local/self-hosted --force-with-lease
 ```
 
 `--force-with-lease` refuses if someone else pushed to the branch since your last fetch — safer than `--force`.
+
+---
+
+### Step 7b — Commit and push any remaining uncommitted changes
+
+After stash pop, `git status` may show staged files (resolved conflicts, WIP) and new untracked files (e.g. `customization/upstream-sync-status.md`). Commit and push them as a normal (non-force) push:
+
+```bash
+git status                        # see what's staged / untracked
+
+# Stage everything you want to include
+git add <file1> <file2> ...       # list explicitly — avoid git add -A
+
+git commit -m "chore: post-rebase WIP + <short description>"
+
+git push origin local/self-hosted # no --force-with-lease needed — this is a new commit on top
+```
+
+> **Why no force here?** The rebase force-push already rewrote the branch. This subsequent commit is a normal fast-forward — `--force-with-lease` is not needed and could mask mistakes.
 
 ---
 
