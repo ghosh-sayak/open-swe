@@ -394,10 +394,11 @@ async def check_or_recreate_sandbox(
     """
     try:
         await asyncio.to_thread(sandbox_backend.execute, "echo ok")
-    except SandboxClientError:
+    except Exception:  # noqa: BLE001
         logger.warning(
             "Cached sandbox is no longer reachable for thread %s, recreating",
             thread_id,
+            exc_info=True,
         )
         sandbox_backend = await _recreate_sandbox(
             thread_id,

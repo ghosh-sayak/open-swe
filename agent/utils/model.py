@@ -93,7 +93,7 @@ def openai_reasoning_for(
     """
     effort = profile_effort or default_effort or DEFAULT_LLM_REASONING.get("effort")
     if effort == "none":
-        return {"effort": "none"}
+        return None
     if effort == "low":
         return {"effort": "low", "summary": "auto"}
     if effort == "medium":

@@ -1033,6 +1033,8 @@ docker logs daytona-runner-1 -f                              # Daytona runner lo
 
 ## Staying Up to Date with Upstream open-swe
 
+> **Current sync status:** see [upstream-sync-status.md](upstream-sync-status.md) — updated each time the daily workflow is run.
+
 ### The strategy
 
 ```
