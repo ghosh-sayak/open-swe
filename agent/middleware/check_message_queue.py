@@ -1,7 +1,7 @@
 """Before-model middleware that injects queued messages into state.
 
-Checks the LangGraph store for pending messages (e.g. follow-up Linear
-comments that arrived while the agent was busy) and injects them as new
+Checks the LangGraph store for pending messages (e.g. follow-up dashboard or
+GitHub comments that arrived while the agent was busy) and injects them as new
 human messages before the next model call.
 """
 
@@ -27,15 +27,8 @@ DASHBOARD_HANDOFF_MARKER = "[Open SWE Web handoff]"
 DASHBOARD_HANDOFF_INSTRUCTION = (
     f"{DASHBOARD_HANDOFF_MARKER} This follow-up was sent from Web. "
     "The conversation has moved to Web, so answer in the dashboard stream with a normal "
-    "assistant message. Do not call slack_thread_reply unless a later Slack message explicitly "
-    "moves the conversation back to Slack."
+    "assistant message."
 )
-
-
-class LinearNotifyState(AgentState):
-    """Extended agent state for tracking Linear notifications."""
-
-    linear_messages_sent_count: int
 
 
 async def _resolve_thread_model_id(thread_id: str) -> str | None:
@@ -136,9 +129,9 @@ async def _consume_pending_autofix_event(store: BaseStore, thread_id: str) -> st
     return message
 
 
-@before_model(state_schema=LinearNotifyState)
+@before_model(state_schema=AgentState)
 async def check_message_queue_before_model(  # noqa: PLR0911
-    state: LinearNotifyState,  # noqa: ARG001
+    state: AgentState,  # noqa: ARG001
     runtime: Runtime,  # noqa: ARG001
 ) -> dict[str, Any] | None:
     """Middleware that checks for queued messages before each model call.

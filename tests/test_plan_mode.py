@@ -29,9 +29,6 @@ def test_plan_mode_excluded_tools_cover_mutating_tools() -> None:
         "task",
         "open_pull_request",
         "request_pr_review",
-        "linear_create_issue",
-        "linear_update_issue",
-        "linear_delete_issue",
     ):
         assert tool in excluded
     # Read-only tools must stay available.
@@ -193,31 +190,3 @@ def test_enter_plan_mode_exported() -> None:
     from agent.tools import enter_plan_mode
 
     assert callable(enter_plan_mode)
-
-
-def test_build_plan_approval_blocks_has_three_buttons() -> None:
-    from agent.tools.slack_thread_reply import _build_plan_approval_blocks
-
-    blocks = _build_plan_approval_blocks("Here is my plan")
-    assert len(blocks) == 2
-    assert blocks[0]["type"] == "section"
-    actions = blocks[1]
-    assert actions["type"] == "actions"
-    elements = actions["elements"]
-    assert len(elements) == 3
-    texts = [e["text"]["text"] for e in elements]
-    assert "Approve & Implement" in texts
-    assert "Revise Plan" in texts
-    assert "Cancel" in texts
-
-
-def test_build_plan_approval_blocks_values_have_plan_approval_type() -> None:
-    import json
-
-    from agent.tools.slack_thread_reply import _build_plan_approval_blocks
-
-    blocks = _build_plan_approval_blocks("plan text")
-    for element in blocks[1]["elements"]:
-        value = json.loads(element["value"])
-        assert value["type"] == "plan_approval"
-        assert value["action"] in ("approve", "revise", "cancel")

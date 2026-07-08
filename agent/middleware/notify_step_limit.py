@@ -10,7 +10,7 @@ from langchain.agents.middleware import AgentState, after_agent
 from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
-from ..utils.slack import post_slack_thread_reply
+from ..utils.source_notify import post_source_notification
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +38,12 @@ async def notify_step_limit_reached(
     state: AgentState,
     runtime: Runtime,
 ) -> dict[str, Any] | None:
-    """Notify the user via Slack when the agent hits its step limit.
+    """Notify the user on the GitHub source when the agent hits its step limit.
 
     Runs after the agent exits. Checks whether the last AI message contains
-    the ``ModelCallLimitMiddleware`` marker text; if so, posts a Slack thread
-    reply so the user is not left wondering what happened.
+    the ``ModelCallLimitMiddleware`` marker text; if so, posts a comment on the
+    triggering GitHub PR/issue so the user is not left wondering what happened.
+    Dashboard-triggered runs surface this in the dashboard.
     """
     messages = state.get("messages", [])
     if not messages:
@@ -54,25 +55,6 @@ async def notify_step_limit_reached(
     if _LIMIT_MARKER not in content:
         return None
 
-    config = get_config()
-    configurable = config.get("configurable", {})
-    slack_thread = configurable.get("slack_thread") if isinstance(configurable, dict) else None
-    if not isinstance(slack_thread, dict):
-        logger.info("No Slack thread config — cannot send step-limit notification")
-        return None
-
-    channel_id = slack_thread.get("channel_id")
-    thread_ts = slack_thread.get("thread_ts")
-
-    if (
-        not isinstance(channel_id, str)
-        or not isinstance(thread_ts, str)
-        or not channel_id
-        or not thread_ts
-    ):
-        logger.info("No Slack thread config — cannot send step-limit notification")
-        return None
-
     message = (
         "I've reached my maximum step limit and had to stop. "
         "The task may be incomplete. You can retry with a more focused request, "
@@ -80,8 +62,7 @@ async def notify_step_limit_reached(
     )
 
     try:
-        await post_slack_thread_reply(channel_id, thread_ts, message)
-        logger.info("Sent step-limit notification to Slack thread %s", thread_ts)
+        await post_source_notification(get_config(), message)
     except Exception:
         logger.exception("Failed to send step-limit notification")
 

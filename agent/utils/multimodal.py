@@ -5,10 +5,8 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
-import os
 import re
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from langchain_core.messages.content import create_image_block
@@ -59,27 +57,7 @@ async def fetch_image_block(
             logger.warning("Refusing to fetch image (SSRF guard) %s: %s", image_url, reason)
             return None
         logger.debug("Fetching image from %s", image_url)
-        headers = None
-        host = (urlparse(image_url).hostname or "").lower()
-        if host == "uploads.linear.app" or host.endswith(".uploads.linear.app"):
-            linear_api_key = os.environ.get("LINEAR_API_KEY", "")
-            if linear_api_key:
-                headers = {"Authorization": linear_api_key}
-            else:
-                logger.warning(
-                    "LINEAR_API_KEY not set; cannot authenticate image fetch for %s",
-                    image_url,
-                )
-        elif host == "files.slack.com" or host.endswith(".files.slack.com"):
-            slack_bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
-            if slack_bot_token:
-                headers = {"Authorization": f"Bearer {slack_bot_token}"}
-            else:
-                logger.warning(
-                    "SLACK_BOT_TOKEN not set; cannot authenticate image fetch for %s",
-                    image_url,
-                )
-        response = await client.get(image_url, headers=headers, follow_redirects=True)
+        response = await client.get(image_url, follow_redirects=True)
         response.raise_for_status()
         content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
         if not content_type:

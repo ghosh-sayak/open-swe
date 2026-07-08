@@ -22,12 +22,9 @@ def get_every_message_since_last_human(state: AgentState) -> list[AnyMessage]:
 
 
 def check_if_model_messaged_user(messages: list[AnyMessage]) -> bool:
-    for msg in messages:
-        if msg.type == "tool" and msg.name in [
-            "slack_thread_reply",
-            "linear_comment",
-        ]:
-            return True
+    # Slack/Linear reply tools are retired; the agent notifies the user via
+    # `GH_TOKEN=dummy gh ... comment` (an execute call) or the dashboard stream,
+    # neither of which is a dedicated user-messaging tool to detect here.
     return False
 
 

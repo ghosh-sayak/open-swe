@@ -16,8 +16,6 @@ from langgraph_sdk import get_client
 from .github_app import get_github_app_installation_token_with_expiry
 from .github_token import cache_github_token_for_thread, get_github_token_from_thread
 from .http import DEFAULT_HTTP_TIMEOUT
-from .linear import comment_on_linear_issue
-from .slack import post_slack_thread_reply
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +26,7 @@ class GitHubUserAuthRequired(RuntimeError):
     """Raised when a mapped user has no valid GitHub OAuth token.
 
     Signals that the run cannot proceed on the user's behalf and that the user
-    must (re-)authenticate. The Slack webhook blocks before creating a run, so
-    this is a defense-in-depth signal at execution time.
+    must (re-)authenticate. This is a defense-in-depth signal at execution time.
     """
 
     def __init__(self, source: str, github_login: str | None) -> None:
@@ -66,28 +63,20 @@ def is_bot_token_only_mode() -> bool:
     return bool(LANGSMITH_API_KEY and not X_SERVICE_AUTH_JWT_SECRET and not USER_ID_API_KEY_MAP)
 
 
-def _retry_instruction(source: str) -> str:
-    if source == "slack":
-        return "Once authenticated, mention me again in this Slack thread to retry."
-    return "Once authenticated, reply to this issue mentioning @openswe to retry."
+def _retry_instruction(source: str) -> str:  # noqa: ARG001
+    return "Once authenticated, retry your request."
 
 
-def _source_account_label(source: str) -> str:
-    if source == "slack":
-        return "Slack"
-    return "Linear"
+def _source_account_label(source: str) -> str:  # noqa: ARG001
+    return "GitHub"
 
 
-def _auth_link_text(source: str, auth_url: str) -> str:
-    if source == "slack":
-        return auth_url
+def _auth_link_text(source: str, auth_url: str) -> str:  # noqa: ARG001
     return f"[Authenticate with GitHub]({auth_url})"
 
 
-def _work_item_label(source: str) -> str:
-    if source == "slack":
-        return "thread"
-    return "issue"
+def _work_item_label(source: str) -> str:  # noqa: ARG001
+    return "request"
 
 
 def get_secret_key_for_user(
@@ -235,56 +224,10 @@ async def leave_failure_comment(
     source: str,
     message: str,
 ) -> None:
-    """Leave an auth failure comment for the appropriate source."""
-    config = get_config()
-    configurable = config.get("configurable", {})
-
-    if source == "linear":
-        linear_issue = configurable.get("linear_issue", {})
-        issue_id = linear_issue.get("id") if isinstance(linear_issue, dict) else None
-        if issue_id:
-            logger.info(
-                "Posting auth failure comment to Linear issue %s (source=%s)",
-                issue_id,
-                source,
-            )
-            await comment_on_linear_issue(issue_id, message)
-        return
-    if source == "slack":
-        slack_thread = configurable.get("slack_thread", {})
-        channel_id = slack_thread.get("channel_id") if isinstance(slack_thread, dict) else None
-        thread_ts = slack_thread.get("thread_ts") if isinstance(slack_thread, dict) else None
-        if channel_id and thread_ts:
-            # The auth-failure ``message`` can carry a per-user GitHub auth URL,
-            # which must not be posted in a shared thread (anyone could complete
-            # it and bind the wrong account). Post a generic, token-free notice and
-            # let the user finish sign-in from their own authenticated dashboard.
-            from ..dashboard.oauth import build_settings_url
-
-            settings_url = build_settings_url()
-            link = (
-                f"<{settings_url}|your Open SWE settings>"
-                if settings_url
-                else "your Open SWE settings"
-            )
-            logger.info(
-                "Posting generic auth-failure notice to Slack channel %s thread %s",
-                channel_id,
-                thread_ts,
-            )
-            await post_slack_thread_reply(
-                channel_id,
-                thread_ts,
-                "⚠️ I couldn't resolve your GitHub account for this run. Sign in with GitHub and "
-                f"connect your Slack account in {link}, then tag me again.",
-            )
-        return
-    if source in ("github", "github_push"):
-        logger.warning(
-            "Auth failure for GitHub-triggered run (no token to post comment): %s", message
-        )
-        return
-    raise ValueError(f"Unknown source: {source}")
+    """Record an auth failure. GitHub-triggered runs have no token to post a
+    comment with, and dashboard/schedule runs surface errors in the UI, so this
+    just logs — the run still raises so the failure is not silent."""
+    logger.warning("Auth failure for %s-triggered run: %s", source, message)
 
 
 def _cache_resolved_github_token(
@@ -402,7 +345,7 @@ async def resolve_github_token(config: RunnableConfig, thread_id: str) -> tuple[
     """Resolve a GitHub token from the run config based on the source.
 
     Routes to the correct auth method depending on whether the run was
-    triggered from GitHub (login-based) or Linear/Slack (email-based).
+    triggered from GitHub (login-based) or the dashboard (email-based).
 
     In bot-token-only mode (LANGSMITH_API_KEY_PROD set without
     X_SERVICE_AUTH_JWT_SECRET), the GitHub App installation token is used
@@ -420,10 +363,10 @@ async def resolve_github_token(config: RunnableConfig, thread_id: str) -> tuple[
     github_login = configurable.get("github_login")
 
     # Per-user OAuth from the dashboard store wins even in bot-token-only mode,
-    # for sources that carry a mapped GitHub login (Slack, dashboard). This is
-    # what lets the agent open PRs as the triggering user.
+    # for sources that carry a mapped GitHub login (dashboard). This is what
+    # lets the agent open PRs as the triggering user.
     if (
-        source in ("slack", "dashboard", "schedule")
+        source in ("dashboard", "schedule")
         and isinstance(github_login, str)
         and github_login.strip()
     ):

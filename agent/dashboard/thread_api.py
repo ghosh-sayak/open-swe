@@ -54,7 +54,7 @@ _MAX_DASHBOARD_IMAGE_BYTES = 10 * 1024 * 1024
 _PROXY_REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 _PROXY_STREAM_TIMEOUT = httpx.Timeout(None)
 # Sources whose threads should surface in the Agents UI (besides "dashboard").
-_SURFACED_SOURCES: tuple[str, ...] = ("dashboard", "github", "slack", "linear", "schedule")
+_SURFACED_SOURCES: tuple[str, ...] = ("dashboard", "github", "schedule")
 # PR lifecycle states surfaced to the UI for a thread's associated pull request.
 _PR_STATES: frozenset[str] = frozenset({"draft", "open", "merged", "closed"})
 _RECOVERY_PATCH_LIMIT_BYTES = 25 * 1024 * 1024
@@ -269,8 +269,8 @@ def _thread_is_readable(metadata: dict[str, Any]) -> bool:
 
     Dashboard login is already gated by ``ALLOWED_GITHUB_ORGS`` (see
     ``oauth.enforce_org_login_gate``), so any logged-in user is a trusted
-    org member. This lets teammates open "Open in Web" links shared in Slack
-    threads with read-only access.
+    org member. This lets teammates open shared "Open in Web" links with
+    read-only access.
     """
     return _thread_source(metadata) in _SURFACED_SOURCES
 

@@ -183,7 +183,7 @@ def decode_state(state: str) -> dict[str, Any]:
         raise HTTPException(400, f"invalid state: {e}") from e
 
 
-# Dashboard route where users manage their GitHub↔Slack link.
+# Dashboard route where users manage their profile settings.
 PROFILE_SETTINGS_PATH = "/my-settings"
 
 
@@ -191,8 +191,8 @@ def build_settings_url() -> str | None:
     """Return the dashboard Profile Settings URL, or ``None`` if not configured.
 
     This is a plain, token-free link: it carries no per-user identity, so it is
-    safe to share in a public Slack thread. The user signs in with GitHub from
-    their own session and connects Slack via verified OIDC on the settings page.
+    safe to share. The user signs in with GitHub from their own session to
+    manage settings.
     """
     frontend_base = os.environ.get("DASHBOARD_BASE_URL", "").rstrip("/")
     if not frontend_base:

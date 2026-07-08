@@ -668,7 +668,7 @@ async def test_read_endpoints_accessible_by_non_owner(monkeypatch) -> None:
             assert thread_id == "tid"
             return {
                 "thread_id": "tid",
-                "metadata": {"source": "slack", "github_login": "owner"},
+                "metadata": {"source": "github", "github_login": "owner"},
             }
 
         async def get_state(self, thread_id: str) -> dict[str, object]:
@@ -863,7 +863,7 @@ def test_thread_summary_defaults_to_not_resolved() -> None:
 
 def test_thread_summary_is_owner_true_for_matching_login() -> None:
     summary = thread_api._thread_summary(
-        {"thread_id": "tid", "metadata": {"source": "slack", "github_login": "octocat"}},
+        {"thread_id": "tid", "metadata": {"source": "github", "github_login": "octocat"}},
         owner_login="octocat",
     )
 
@@ -872,7 +872,7 @@ def test_thread_summary_is_owner_true_for_matching_login() -> None:
 
 def test_thread_summary_is_owner_false_for_non_owner() -> None:
     summary = thread_api._thread_summary(
-        {"thread_id": "tid", "metadata": {"source": "slack", "github_login": "octocat"}},
+        {"thread_id": "tid", "metadata": {"source": "github", "github_login": "octocat"}},
         owner_login="teammate",
     )
 
@@ -884,7 +884,7 @@ def test_thread_summary_is_owner_true_for_matching_email() -> None:
         {
             "thread_id": "tid",
             "metadata": {
-                "source": "slack",
+                "source": "github",
                 "github_login": "octocat",
                 "triggering_user_email": "octo@example.com",
             },
@@ -898,7 +898,7 @@ def test_thread_summary_is_owner_true_for_matching_email() -> None:
 
 def test_thread_summary_is_owner_defaults_true_without_owner_login() -> None:
     summary = thread_api._thread_summary(
-        {"thread_id": "tid", "metadata": {"source": "slack", "github_login": "octocat"}},
+        {"thread_id": "tid", "metadata": {"source": "github", "github_login": "octocat"}},
     )
 
     assert summary["isOwner"] is True
@@ -1192,7 +1192,7 @@ async def test_list_dashboard_threads_page_refreshes_only_unsettled_threads(monk
 async def test_status_filter_refreshes_threads_missing_run_status(monkeypatch) -> None:
     threads = _make_threads(2, resolved_before=0)
     for thread in threads:
-        thread["metadata"]["source"] = "slack"
+        thread["metadata"]["source"] = "github"
     run_statuses = {"t0": "success", "t1": "error"}
     run_list_thread_ids: list[str] = []
 

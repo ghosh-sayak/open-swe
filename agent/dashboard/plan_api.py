@@ -230,12 +230,12 @@ async def _dispatch_followup(
 
     Runs on the same LangGraph thread, so the agent resumes from the checkpoint
     with the full planning history plus this instruction. The configurable is
-    rebuilt from the thread's stored owner/repo/Slack context so the agent can
-    push, open a PR, and reply in the original channel.
+    rebuilt from the thread's stored owner/repo context so the agent can push,
+    open a PR, and reply in the original channel.
     """
     configurable: dict[str, Any] = {
         "thread_id": thread_id,
-        "source": _thread_source(metadata) or "slack",
+        "source": _thread_source(metadata) or "dashboard",
     }
     email = metadata.get("triggering_user_email")
     if isinstance(email, str) and email:
@@ -246,11 +246,6 @@ async def _dispatch_followup(
     repo = _repo_config_from_metadata(metadata)
     if repo:
         configurable["repo"] = repo
-    source_context = metadata.get("source_context")
-    if isinstance(source_context, dict):
-        slack_thread = source_context.get("slack_thread")
-        if isinstance(slack_thread, dict):
-            configurable["slack_thread"] = slack_thread
     # Carry the decision to the follow-up run: approve continues out of plan
     # mode (implement), reject stays in plan mode (revise the plan).
     configurable["plan_mode"] = plan_mode

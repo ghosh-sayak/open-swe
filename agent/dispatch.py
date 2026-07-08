@@ -65,9 +65,9 @@ async def dispatch_agent_run(
 ) -> dict[str, Any]:
     """Create (or interrupt-and-resume) a run for ``thread_id``.
 
-    Routes every Slack / Linear / GitHub / dashboard trigger through one
-    contract. ``source`` is for logging/metadata only; ``assistant_id`` selects
-    the graph (``"agent"`` or ``"reviewer"``).
+    Routes every GitHub / dashboard trigger through one contract. ``source`` is
+    for logging/metadata only; ``assistant_id`` selects the graph (``"agent"``
+    or ``"reviewer"``).
     """
     client = client or dispatch_client()
     run = await client.runs.create(

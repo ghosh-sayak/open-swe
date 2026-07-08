@@ -72,20 +72,6 @@ class TestGetEveryMessageSinceLastHuman:
 
 
 class TestCheckIfModelMessagedUser:
-    def test_returns_true_for_slack_thread_reply(self) -> None:
-        messages = [
-            ToolMessage(content="sent", tool_call_id="123", name="slack_thread_reply"),
-        ]
-
-        assert check_if_model_messaged_user(messages) is True
-
-    def test_returns_true_for_linear_comment(self) -> None:
-        messages = [
-            ToolMessage(content="commented", tool_call_id="123", name="linear_comment"),
-        ]
-
-        assert check_if_model_messaged_user(messages) is True
-
     def test_returns_false_for_other_tools(self) -> None:
         messages = [
             ToolMessage(content="result", tool_call_id="123", name="bash"),
@@ -131,34 +117,6 @@ class TestEnsureNoEmptyMsgNotify:
     def _make_runtime(self) -> MagicMock:
         return MagicMock()
 
-    def test_returns_none_when_user_messaged(self) -> None:
-        empty_ai = AIMessage(content="")
-        state = {
-            "messages": [
-                HumanMessage(content="fix the bug"),
-                ToolMessage(content="message sent", tool_call_id="1", name="slack_thread_reply"),
-                empty_ai,
-            ]
-        }
-
-        result = ensure_no_empty_msg.after_model(state, self._make_runtime())
-
-        assert result is None
-
-    def test_returns_none_with_linear_comment(self) -> None:
-        empty_ai = AIMessage(content="")
-        state = {
-            "messages": [
-                HumanMessage(content="fix the bug"),
-                ToolMessage(content="commented", tool_call_id="1", name="linear_comment"),
-                empty_ai,
-            ]
-        }
-
-        result = ensure_no_empty_msg.after_model(state, self._make_runtime())
-
-        assert result is None
-
     def test_injects_no_op_when_user_not_messaged(self) -> None:
         empty_ai = AIMessage(content="")
         state = {
@@ -174,20 +132,6 @@ class TestEnsureNoEmptyMsgNotify:
         assert result is not None
         assert len(result["messages"]) == 2
         assert result["messages"][0].tool_calls[0]["name"] == "no_op"
-
-    def test_returns_none_when_only_user_messaged(self) -> None:
-        empty_ai = AIMessage(content="")
-        state = {
-            "messages": [
-                HumanMessage(content="fix the bug"),
-                ToolMessage(content="message sent", tool_call_id="1", name="slack_thread_reply"),
-                empty_ai,
-            ]
-        }
-
-        result = ensure_no_empty_msg.after_model(state, self._make_runtime())
-
-        assert result is None
 
     def test_skips_confirming_completion_for_dashboard_source(self) -> None:
         ai = AIMessage(content="Hi! How can I help?")
@@ -223,7 +167,7 @@ class TestEnsureNoEmptyMsgNotify:
 
         with patch(
             "agent.middleware.ensure_no_empty_msg.get_config",
-            return_value={"configurable": {"source": "slack"}},
+            return_value={"configurable": {"source": "github"}},
         ):
             result = ensure_no_empty_msg.after_model(state, self._make_runtime())
 
