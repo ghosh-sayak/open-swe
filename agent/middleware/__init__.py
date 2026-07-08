@@ -5,7 +5,6 @@ from .model_fallback import ModelFallbackMiddleware
 from .notify_step_limit import notify_step_limit_reached
 from .plan_mode import PlanModeMiddleware
 from .refresh_github_proxy import refresh_github_proxy_before_model
-from .refresh_slack_status import SlackAssistantStatusMiddleware
 from .repair_orphaned_tool_calls import RepairOrphanedToolCallsMiddleware
 from .sandbox_circuit_breaker import SandboxCircuitBreakerMiddleware
 from .sanitize_thinking_blocks import SanitizeThinkingBlocksMiddleware
@@ -26,7 +25,6 @@ __all__ = [
     "ToolErrorMiddleware",
     "WorkflowPushGuardMiddleware",
     "SandboxCircuitBreakerMiddleware",
-    "SlackAssistantStatusMiddleware",
     "check_message_queue_before_model",
     "ensure_no_empty_msg",
     "notify_step_limit_reached",
