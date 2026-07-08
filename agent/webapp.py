@@ -1,7 +1,6 @@
 """Custom FastAPI routes for LangGraph server."""
 
 import hashlib
-import hmac
 import json
 import logging
 import os
@@ -10,7 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import parse_qs, quote
+from urllib.parse import quote
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -21,12 +20,10 @@ from langgraph_sdk.client import LangGraphClient
 from .completion import handle_run_completion, verify_run_complete_token
 from .dashboard import router as dashboard_router
 from .dashboard.agent_overrides import (
-    get_profile_default_repo,
     resolve_agent_model_id,  # noqa: F401
     resolve_login_from_email_async,
 )
 from .dashboard.enabled_repos import is_review_repo_enabled
-from .dashboard.oauth import build_settings_url
 from .dashboard.options import model_supports_images  # noqa: F401
 from .dashboard.profiles import (  # noqa: F401
     get_profile,
@@ -34,18 +31,15 @@ from .dashboard.profiles import (  # noqa: F401
     has_access_token_record,
 )
 from .dashboard.team_settings import (
-    get_team_default_repo,
     get_team_settings,
 )
 from .dashboard.user_mappings import (
     email_for_login,  # noqa: F401
     login_for_email,  # noqa: F401
-    login_for_slack_id,  # noqa: F401
 )
 from .dashboard.user_mappings import (
     refresh_cache as refresh_user_mapping_cache,  # noqa: F401
 )
-from .dashboard.workflow_approval import decide_workflow_push_approval
 from .dispatch import dispatch_agent_run
 from .reviewer_findings import (
     REVIEWER_THREAD_KIND,
@@ -83,42 +77,18 @@ from .utils.github_comments import (
     verify_github_signature,
 )
 from .utils.github_org_membership import INTERNAL_BOT_LOGINS, is_user_active_org_member
+from .utils.github_pr import GitHubPrRef
 from .utils.github_token import (
     cache_github_token_for_thread,
     get_github_token_from_thread,
     invalidate_cached_github_token,
 )
 from .utils.http import DEFAULT_HTTP_TIMEOUT
-from .utils.linear import post_linear_trace_comment  # noqa: F401
-from .utils.linear_team_repo_map import LINEAR_TEAM_TO_REPO
 from .utils.multimodal import (
     dedupe_urls,  # noqa: F401
     extract_image_urls,  # noqa: F401
     fetch_image_block,  # noqa: F401
     vision_not_supported_warning,  # noqa: F401
-)
-from .utils.repo import extract_repo_from_text
-from .utils.slack import (
-    GitHubPrRef,
-    fetch_slack_thread_messages,  # noqa: F401
-    format_slack_messages_for_prompt,  # noqa: F401
-    get_slack_channel_description,
-    get_slack_channel_info,
-    get_slack_user_info,
-    get_slack_user_names,  # noqa: F401
-    post_slack_thread_reply,
-    post_slack_trace_reply,  # noqa: F401
-    resolve_slack_links_in_context,  # noqa: F401
-    select_slack_context_messages,  # noqa: F401
-    set_slack_assistant_status,  # noqa: F401
-    store_slack_run_mapping,  # noqa: F401
-    strip_bot_mention,  # noqa: F401
-    verify_slack_signature,
-)
-from .utils.slack_feedback import (
-    FEEDBACK_REACTIONS,
-    process_slack_reaction_added,
-    process_slack_reaction_removed,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,19 +130,9 @@ from .dashboard.workflow_approval_api import workflow_approval_router  # noqa: E
 app.include_router(plan_router)
 app.include_router(workflow_approval_router)
 
-LINEAR_WEBHOOK_SECRET = os.environ.get("LINEAR_WEBHOOK_SECRET", "")
 GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
-SLACK_BOT_USER_ID = os.environ.get("SLACK_BOT_USER_ID", "")
-SLACK_BOT_USERNAME = os.environ.get("SLACK_BOT_USERNAME", "")
 DEFAULT_REPO_OWNER = os.environ.get("DEFAULT_REPO_OWNER", "langchain-ai")
 DEFAULT_REPO_NAME = os.environ.get("DEFAULT_REPO_NAME", "")
-SLACK_REPO_OWNER = os.environ.get("SLACK_REPO_OWNER", "") or DEFAULT_REPO_OWNER
-SLACK_REPO_NAME = os.environ.get("SLACK_REPO_NAME", "") or DEFAULT_REPO_NAME
-DOCS_PLZ_SLACK_CHANNEL_NAME = "docs-plz"
-DOCS_PLZ_SLACK_GATE_REPLY = (
-    "Please don't use Open SWE here, instead ask the Fleet docs-plz agent to implement the docs"
-)
 
 LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL") or os.environ.get(
     "LANGGRAPH_URL_PROD", "http://localhost:2024"
@@ -199,8 +159,6 @@ ALLOWED_GITHUB_REPOS: frozenset[str] = frozenset(
     if repo.strip()
 )
 
-LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")
-
 _GITHUB_BOT_MESSAGE_PREFIXES = (
     "🔐 **GitHub Authentication Required**",
     "✅ **Pull Request Created**",
@@ -212,158 +170,6 @@ _GITHUB_BOT_MESSAGE_PREFIXES = (
 )
 
 
-def get_repo_config_from_team_mapping(
-    team_identifier: str, project_name: str = ""
-) -> dict[str, str]:
-    """Look up repository configuration from LINEAR_TEAM_TO_REPO mapping."""
-    fallback = {"owner": DEFAULT_REPO_OWNER, "name": DEFAULT_REPO_NAME} if DEFAULT_REPO_NAME else {}
-
-    if not team_identifier or team_identifier not in LINEAR_TEAM_TO_REPO:
-        return fallback
-
-    config = LINEAR_TEAM_TO_REPO[team_identifier]
-
-    if "owner" in config and "name" in config:
-        return config
-
-    if "projects" in config and project_name:
-        project_config = config["projects"].get(project_name)
-        if project_config:
-            return project_config
-
-    if "default" in config:
-        return config["default"]
-
-    return fallback
-
-
-async def react_to_linear_comment(comment_id: str, emoji: str = "👀") -> bool:
-    """Add an emoji reaction to a Linear comment.
-
-    Args:
-        comment_id: The Linear comment ID
-        emoji: The emoji to react with (default: eyes 👀)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    if not LINEAR_API_KEY:
-        return False
-
-    url = "https://api.linear.app/graphql"
-
-    mutation = """
-    mutation ReactionCreate($commentId: String!, $emoji: String!) {
-        reactionCreate(input: { commentId: $commentId, emoji: $emoji }) {
-            success
-        }
-    }
-    """
-
-    async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT) as client:
-        try:
-            response = await client.post(
-                url,
-                headers={
-                    "Authorization": LINEAR_API_KEY,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "query": mutation,
-                    "variables": {"commentId": comment_id, "emoji": emoji},
-                },
-            )
-            response.raise_for_status()
-            result = response.json()
-            return bool(result.get("data", {}).get("reactionCreate", {}).get("success"))
-        except Exception:  # noqa: BLE001
-            return False
-
-
-async def fetch_linear_issue_details(issue_id: str) -> dict[str, Any] | None:
-    """Fetch full issue details from Linear API including description and comments.
-
-    Args:
-        issue_id: The Linear issue ID
-
-    Returns:
-        Full issue data dict, or None if fetch failed
-    """
-    if not LINEAR_API_KEY:
-        return None
-
-    url = "https://api.linear.app/graphql"
-
-    query = """
-    query GetIssue($issueId: String!) {
-        issue(id: $issueId) {
-            id
-            identifier
-            title
-            description
-            url
-            project {
-                id
-                name
-            }
-            team {
-                id
-                name
-                key
-            }
-            comments {
-                nodes {
-                    id
-                    body
-                    createdAt
-                    user {
-                        id
-                        name
-                        email
-                    }
-                }
-            }
-        }
-    }
-    """
-
-    async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT) as client:
-        try:
-            response = await client.post(
-                url,
-                headers={
-                    "Authorization": LINEAR_API_KEY,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "query": query,
-                    "variables": {"issueId": issue_id},
-                },
-            )
-            response.raise_for_status()
-            result = response.json()
-
-            return result.get("data", {}).get("issue")
-        except httpx.HTTPError:
-            return None
-
-
-def generate_thread_id_from_issue(issue_id: str) -> str:
-    """Generate a deterministic thread ID from a Linear issue ID.
-
-    Args:
-        issue_id: The Linear issue ID
-
-    Returns:
-        A UUID-formatted thread ID derived from the issue ID
-    """
-    hash_bytes = hashlib.sha256(f"linear-issue:{issue_id}".encode()).hexdigest()
-    return (
-        f"{hash_bytes[:8]}-{hash_bytes[8:12]}-{hash_bytes[12:16]}-"
-        f"{hash_bytes[16:20]}-{hash_bytes[20:32]}"
-    )
-
-
 def generate_thread_id_from_github_issue(issue_id: str) -> str:
     """Generate a deterministic thread ID from a GitHub issue ID."""
     hash_bytes = hashlib.sha256(f"github-issue:{issue_id}".encode()).hexdigest()
@@ -371,13 +177,6 @@ def generate_thread_id_from_github_issue(issue_id: str) -> str:
         f"{hash_bytes[:8]}-{hash_bytes[8:12]}-{hash_bytes[12:16]}-"
         f"{hash_bytes[16:20]}-{hash_bytes[20:32]}"
     )
-
-
-def generate_thread_id_from_slack_thread(channel_id: str, thread_id: str) -> str:
-    """Generate a deterministic thread ID from a Slack thread identifier."""
-    composite = f"{channel_id}:{thread_id}"
-    md5_hex = hashlib.md5(composite.encode("utf-8")).hexdigest()
-    return str(uuid.UUID(hex=md5_hex))
 
 
 def generate_reviewer_thread_id(owner: str, repo: str, pr_number: int) -> str:
@@ -418,22 +217,6 @@ def _run_id_for_logging(run: Any) -> str:
     else:
         run_id = getattr(run, "run_id", None)
     return run_id if isinstance(run_id, str) and run_id else "<unknown>"
-
-
-async def _is_docs_plz_slack_channel(channel_id: str) -> bool:
-    """Check whether a Slack channel is the docs-plz handoff channel."""
-    try:
-        channel = await get_slack_channel_info(channel_id)
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to resolve Slack channel info for docs-plz gate")
-        return False
-    if not isinstance(channel, dict):
-        return False
-    candidate_names = (channel.get("name"), channel.get("name_normalized"))
-    return any(
-        isinstance(name, str) and name.strip().lower() == DOCS_PLZ_SLACK_CHANNEL_NAME
-        for name in candidate_names
-    )
 
 
 def _is_repo_allowed(repo_config: dict[str, str]) -> bool:
@@ -514,32 +297,6 @@ async def _enforce_public_repo_org_gate(
     return _PUBLIC_REPO_GATE_REJECTION
 
 
-async def _upsert_slack_thread_repo_metadata(
-    thread_id: str, repo_config: dict[str, str], langgraph_client: LangGraphClient
-) -> None:
-    """Persist the selected repo config on the thread metadata."""
-    try:
-        await langgraph_client.threads.update(thread_id=thread_id, metadata={"repo": repo_config})
-    except Exception as exc:  # noqa: BLE001
-        if _is_not_found_error(exc):
-            try:
-                await langgraph_client.threads.create(
-                    thread_id=thread_id,
-                    if_exists="do_nothing",
-                    metadata={"repo": repo_config},
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "Failed to create Slack thread %s while persisting repo metadata",
-                    thread_id,
-                )
-            return
-        logger.exception(
-            "Failed to persist Slack thread repo metadata for thread %s",
-            thread_id,
-        )
-
-
 async def upsert_agent_thread_owner_metadata(
     thread_id: str,
     *,
@@ -602,92 +359,6 @@ async def upsert_agent_thread_owner_metadata(
         logger.exception("Failed to persist owner metadata for thread %s", thread_id)
 
 
-async def get_slack_repo_config(
-    channel_id: str,
-    thread_ts: str,
-    slack_user_id: str | None = None,
-) -> dict[str, str]:
-    """Resolve repository configuration for Slack-triggered runs.
-
-    Priority:
-        1. Repo carried over from the existing Slack thread's metadata.
-        2. A ``repo:owner/name`` token in the channel's topic/purpose.
-        3. The triggering user's dashboard ``default_repo`` (if they have a
-           profile and their Slack email maps to a known GitHub login).
-        4. Team default repo.
-        5. ``SLACK_REPO_*`` env defaults.
-    """
-    default_owner = SLACK_REPO_OWNER.strip() or DEFAULT_REPO_OWNER
-    default_name = SLACK_REPO_NAME.strip() or DEFAULT_REPO_NAME
-    thread_id = generate_thread_id_from_slack_thread(channel_id, thread_ts)
-    langgraph_client = get_client(url=LANGGRAPH_URL)
-
-    repo_config: dict[str, str] | None = None
-
-    try:
-        thread = await langgraph_client.threads.get(thread_id)
-        thread_repo_config = _extract_repo_config_from_thread(thread)
-        if thread_repo_config:
-            repo_config = thread_repo_config
-    except Exception as exc:  # noqa: BLE001
-        if not _is_not_found_error(exc):
-            logger.exception(
-                "Failed to fetch Slack thread %s for repo resolution",
-                thread_id,
-            )
-
-    if not repo_config:
-        try:
-            channel_description = await get_slack_channel_description(channel_id)
-            if channel_description:
-                channel_repo_config = extract_repo_from_text(
-                    channel_description, default_owner=default_owner
-                )
-                if channel_repo_config:
-                    logger.info(
-                        "Applying repo from Slack channel %s description: %s/%s",
-                        channel_id,
-                        channel_repo_config["owner"],
-                        channel_repo_config["name"],
-                    )
-                    repo_config = channel_repo_config
-        except Exception:  # noqa: BLE001
-            logger.exception("Failed to resolve repo from Slack channel description")
-
-    if not repo_config and slack_user_id:
-        try:
-            slack_user = await get_slack_user_info(slack_user_id)
-            slack_email = (
-                (slack_user or {}).get("profile", {}).get("email")
-                if isinstance(slack_user, dict)
-                else None
-            )
-            profile_repo = await get_profile_default_repo(
-                await resolve_login_from_email_async(slack_email)
-            )
-            if profile_repo:
-                logger.info(
-                    "Applying dashboard default_repo for Slack user %s: %s/%s",
-                    slack_user_id,
-                    profile_repo["owner"],
-                    profile_repo["name"],
-                )
-                repo_config = profile_repo
-        except Exception:  # noqa: BLE001
-            logger.exception("Failed to apply dashboard default_repo for Slack user")
-
-    if not repo_config:
-        repo_config = await get_team_default_repo()
-
-    if not repo_config and default_owner and default_name:
-        repo_config = {"owner": default_owner, "name": default_name}
-
-    if not repo_config:
-        raise HTTPException(400, "no default repository configured")
-
-    return repo_config
-
-
 async def _thread_exists(thread_id: str) -> bool:
     """Return whether a LangGraph thread already exists."""
     langgraph_client = get_client(url=LANGGRAPH_URL)
@@ -710,30 +381,6 @@ async def _ensure_thread_exists_for_metadata(
     except Exception:
         logger.exception("Failed to ensure thread %s exists before metadata update", thread_id)
         return False
-
-
-async def _slack_user_is_thread_owner(thread_id: str, slack_user_id: str) -> bool:
-    """Whether the clicking Slack user is the user who requested the plan.
-
-    Plan approval is owner-only (mirrors the dashboard plan API's
-    ``_user_owns_thread`` gate). The original requester's Slack id is stored in
-    ``source_context.slack_thread.triggering_user_id`` when the run is created.
-    Fails closed when ownership can't be determined.
-    """
-    if not slack_user_id:
-        return False
-    langgraph_client = get_client(url=LANGGRAPH_URL)
-    try:
-        thread = await langgraph_client.threads.get(thread_id)
-    except Exception:  # noqa: BLE001
-        return False
-    metadata = thread.get("metadata") if isinstance(thread, dict) else None
-    if not isinstance(metadata, dict):
-        return False
-    source_context = metadata.get("source_context")
-    slack_thread = source_context.get("slack_thread") if isinstance(source_context, dict) else None
-    owner_id = slack_thread.get("triggering_user_id") if isinstance(slack_thread, dict) else None
-    return isinstance(owner_id, str) and bool(owner_id) and owner_id == slack_user_id
 
 
 async def _get_thread_plan_mode(thread_id: str) -> bool | None:
@@ -772,546 +419,6 @@ async def _set_thread_plan_mode(thread_id: str, enabled: bool) -> None:
                 logger.exception("Failed to create thread %s while persisting plan_mode", thread_id)
             return
         logger.exception("Failed to persist plan_mode for thread %s", thread_id)
-
-
-async def _post_account_link_prompt(
-    channel_id: str,
-    thread_ts: str,
-    user_id: str,
-    user_email: str | None,
-    reason: str = "unlinked",
-) -> None:
-    """Prompt a Slack user to connect their account via the dashboard.
-
-    ``reason`` is ``"unlinked"`` (never signed in with GitHub) or ``"revoked"``
-    (signed in before, but the stored GitHub authorization is no longer usable).
-    Open SWE opens PRs as the triggering user, so it cannot start until the user
-    has signed in with GitHub and connected their Slack account in the dashboard.
-
-    Posts a plain, token-free dashboard link as a visible threaded reply. The
-    link carries no per-user identity, so it's safe to show in a shared channel:
-    the user signs in with GitHub from their own session and connects Slack via
-    verified OIDC on the settings page.
-    """
-    settings_url = build_settings_url()
-    if not settings_url:
-        logger.debug(
-            "Dashboard settings URL unavailable (DASHBOARD_BASE_URL unset); skipping prompt"
-        )
-        return
-    if reason == "revoked":
-        text = (
-            "🔐 Your GitHub sign-in is no longer valid, so I can't resolve your GitHub "
-            f"account. Re-connect it in <{settings_url}|your Open SWE settings>, then tag me again."
-        )
-    else:
-        text = (
-            "👋 I couldn't resolve your GitHub account from Slack. Sign in with GitHub and "
-            f"connect your Slack account in <{settings_url}|your Open SWE settings>, then tag me "
-            "again."
-        )
-    try:
-        await post_slack_thread_reply(channel_id, thread_ts, text)
-    except Exception:  # noqa: BLE001
-        logger.debug("Failed to post account-link prompt to Slack", exc_info=True)
-
-
-def verify_linear_signature(body: bytes, signature: str, secret: str) -> bool:
-    """Verify the Linear webhook signature.
-
-    Args:
-        body: Raw request body bytes
-        signature: The Linear-Signature header value
-        secret: The webhook signing secret
-
-    Returns:
-        True if signature is valid, False otherwise
-    """
-    if not secret:
-        logger.warning("LINEAR_WEBHOOK_SECRET is not configured — rejecting webhook request")
-        return False
-
-    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-
-    return hmac.compare_digest(expected, signature)
-
-
-@app.post("/webhooks/linear")
-async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
-    request: Request, background_tasks: BackgroundTasks
-) -> dict[str, str]:
-    """Handle Linear webhooks.
-
-    Triggers a new LangGraph run when an issue gets the 'open-swe' label added.
-    """
-    logger.info("Received Linear webhook")
-    body = await request.body()
-
-    signature = request.headers.get("Linear-Signature", "")
-    if not verify_linear_signature(body, signature, LINEAR_WEBHOOK_SECRET):
-        logger.warning("Invalid webhook signature")
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        logger.exception("Failed to parse webhook JSON")
-        return {"status": "error", "message": "Invalid JSON"}
-
-    if payload.get("type") != "Comment":
-        logger.debug("Ignoring webhook: not a Comment event")
-        return {"status": "ignored", "reason": "Not a Comment event"}
-
-    action = payload.get("action")
-    if action != "create":
-        logger.debug("Ignoring webhook: action is %s, not create", action)
-        return {
-            "status": "ignored",
-            "reason": f"Comment action is '{action}', only processing 'create'",
-        }
-
-    data = payload.get("data", {})
-
-    if data.get("botActor"):
-        logger.debug("Ignoring webhook: comment is from a bot")
-        return {"status": "ignored", "reason": "Comment is from a bot"}
-
-    comment_body = data.get("body", "")
-    bot_message_prefixes = [
-        "🔐 **GitHub Authentication Required**",
-        "✅ **Pull Request Created**",
-        "✅ **Pull Request Updated**",
-        "**Pull Request Created**",
-        "**Pull Request Updated**",
-        "🤖 **Agent Response**",
-        "❌ **Agent Error**",
-    ]
-    for prefix in bot_message_prefixes:
-        if comment_body.startswith(prefix):
-            logger.debug("Ignoring webhook: comment is our own bot message")
-            return {"status": "ignored", "reason": "Comment is our own bot message"}
-    if "@openswe" not in comment_body.lower():
-        logger.debug("Ignoring webhook: comment doesn't mention @openswe")
-        return {"status": "ignored", "reason": "Comment doesn't mention @openswe"}
-
-    issue = data.get("issue", {})
-    if not issue:
-        logger.debug("Ignoring webhook: no issue data in comment")
-        return {"status": "ignored", "reason": "No issue data in comment"}
-
-    # Fetch full issue details to get project info (webhook doesn't include it)
-    issue_id = issue.get("id", "")
-    full_issue = await fetch_linear_issue_details(issue_id)
-    if not full_issue:
-        logger.warning("Failed to fetch full issue details, using webhook data")
-        full_issue = issue
-
-    repo_config = extract_repo_from_text(comment_body, default_owner=DEFAULT_REPO_OWNER)
-
-    if repo_config:
-        logger.debug(
-            "Using repo from comment body: %s/%s",
-            repo_config["owner"],
-            repo_config["name"],
-        )
-    else:
-        comment_user_email = (data.get("user") or {}).get("email")
-        try:
-            profile_repo = await get_profile_default_repo(
-                await resolve_login_from_email_async(comment_user_email)
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("Failed to apply dashboard default_repo for Linear user")
-            profile_repo = None
-        if profile_repo:
-            logger.info(
-                "Applying dashboard default_repo for Linear user %s: %s/%s",
-                comment_user_email,
-                profile_repo["owner"],
-                profile_repo["name"],
-            )
-            repo_config = profile_repo
-
-    if not repo_config:
-        team = full_issue.get("team", {})
-        team_name = team.get("name", "") if team else ""
-        project = full_issue.get("project")
-        project_name = project.get("name", "") if project else ""
-
-        team_identifier = team_name.strip() if team_name else ""
-        project_key = project_name.strip() if project_name else ""
-
-        repo_config = get_repo_config_from_team_mapping(team_identifier, project_key)
-
-        logger.debug(
-            "Team/project lookup result",
-            extra={
-                "team_name": team_identifier,
-                "project_name": project_key,
-                "repo_config": repo_config,
-            },
-        )
-
-    if not repo_config:
-        repo_config = await get_team_default_repo()
-
-    if not repo_config:
-        return {"status": "ignored", "reason": "No default repository configured"}
-
-    if not _is_repo_allowed(repo_config):
-        logger.warning(
-            "Rejecting Linear webhook: repo '%s/%s' not in allowlist",
-            repo_config.get("owner"),
-            repo_config.get("name"),
-        )
-        return {"status": "ignored", "reason": "Repository not in allowlist"}
-
-    repo_owner = repo_config["owner"]
-    repo_name = repo_config["name"]
-
-    issue["triggering_comment"] = comment_body
-    issue["triggering_comment_id"] = data.get("id", "")
-    comment_user = data.get("user", {})
-    if comment_user:
-        issue["comment_author"] = comment_user
-
-    logger.info(
-        "Accepted webhook for issue '%s' (%s), scheduling background task",
-        issue.get("title"),
-        issue.get("id"),
-    )
-    background_tasks.add_task(process_linear_issue, issue, repo_config)
-
-    return {
-        "status": "accepted",
-        "message": f"Processing issue '{issue.get('title')}' for repo {repo_owner}/{repo_name}",
-    }
-
-
-@app.get("/webhooks/linear")
-async def linear_webhook_verify() -> dict[str, str]:
-    """Verify endpoint for Linear webhook setup."""
-    return {"status": "ok", "message": "Linear webhook endpoint is active"}
-
-
-@app.post("/webhooks/slack")
-async def slack_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
-    """Handle Slack Event API webhooks for app mentions."""
-    body = await request.body()
-
-    signature = request.headers.get("X-Slack-Signature", "")
-    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
-    if not verify_slack_signature(
-        body=body,
-        timestamp=timestamp,
-        signature=signature,
-        secret=SLACK_SIGNING_SECRET,
-    ):
-        logger.warning("Invalid Slack signature")
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        logger.exception("Failed to parse Slack webhook JSON")
-        return {"status": "error", "message": "Invalid JSON"}
-
-    if payload.get("type") == "url_verification":
-        challenge = payload.get("challenge", "")
-        return {"challenge": challenge}
-
-    if payload.get("type") != "event_callback":
-        return {"status": "ignored", "reason": "Not an event callback"}
-
-    event = payload.get("event", {})
-
-    if event.get("type") == "reaction_added":
-        reaction = event.get("reaction")
-        if reaction in FEEDBACK_REACTIONS:
-            background_tasks.add_task(
-                process_slack_reaction_added, event, payload.get("event_id", "")
-            )
-            return {"status": "accepted", "message": "Reaction feedback queued"}
-        return {"status": "ignored", "reason": "Reaction not tracked for feedback"}
-
-    if event.get("type") == "reaction_removed":
-        reaction = event.get("reaction")
-        if reaction in FEEDBACK_REACTIONS:
-            background_tasks.add_task(
-                process_slack_reaction_removed, event, payload.get("event_id", "")
-            )
-            return {"status": "accepted", "message": "Reaction removal queued"}
-        return {"status": "ignored", "reason": "Reaction not tracked for feedback"}
-
-    if event.get("type") != "app_mention":
-        message_text = event.get("text", "")
-        has_username_mention = bool(
-            event.get("type") == "message"
-            and SLACK_BOT_USERNAME
-            and f"@{SLACK_BOT_USERNAME}" in message_text
-        )
-        has_id_mention = bool(
-            event.get("type") == "message"
-            and SLACK_BOT_USER_ID
-            and f"<@{SLACK_BOT_USER_ID}>" in message_text
-        )
-        if not (has_username_mention or has_id_mention):
-            return {"status": "ignored", "reason": "Not an app_mention event"}
-
-    if event.get("subtype") == "bot_message" or event.get("bot_id"):
-        return {"status": "ignored", "reason": "Event from a bot"}
-
-    channel_id = event.get("channel", "")
-    event_ts = event.get("ts", "")
-    thread_ts = event.get("thread_ts") or event_ts
-    user_id = event.get("user", "")
-    text = event.get("text", "")
-    if not channel_id or not event_ts or not thread_ts:
-        return {"status": "ignored", "reason": "Missing channel/thread timestamp"}
-
-    bot_user_id = SLACK_BOT_USER_ID
-    if not bot_user_id:
-        authorizations = payload.get("authorizations", [])
-        if isinstance(authorizations, list) and authorizations:
-            auth_user_id = authorizations[0].get("user_id")
-            if isinstance(auth_user_id, str):
-                bot_user_id = auth_user_id
-    if not bot_user_id:
-        authed_users = payload.get("authed_users", [])
-        if isinstance(authed_users, list) and authed_users:
-            first_user = authed_users[0]
-            if isinstance(first_user, str):
-                bot_user_id = first_user
-
-    if bot_user_id and user_id == bot_user_id:
-        return {"status": "ignored", "reason": "Event from this bot user"}
-
-    if await _is_docs_plz_slack_channel(channel_id):
-        background_tasks.add_task(
-            post_slack_thread_reply,
-            channel_id,
-            thread_ts,
-            DOCS_PLZ_SLACK_GATE_REPLY,
-        )
-        return {"status": "accepted", "message": "Slack mention gated for docs-plz"}
-
-    event_data = {
-        "channel_id": channel_id,
-        "thread_ts": thread_ts,
-        "event_ts": event_ts,
-        "user_id": user_id,
-        "text": text,
-        "bot_user_id": bot_user_id,
-    }
-    repo_config = await get_slack_repo_config(channel_id, thread_ts, slack_user_id=user_id)
-
-    background_tasks.add_task(process_slack_mention, event_data, repo_config)
-
-    return {"status": "accepted", "message": "Slack mention queued"}
-
-
-@app.post("/webhooks/slack/interactivity")
-async def slack_interactivity(
-    request: Request, background_tasks: BackgroundTasks
-) -> dict[str, str]:
-    """Handle Slack Block Kit interactions."""
-    body = await request.body()
-    signature = request.headers.get("X-Slack-Signature", "")
-    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
-    if not verify_slack_signature(
-        body=body,
-        timestamp=timestamp,
-        signature=signature,
-        secret=SLACK_SIGNING_SECRET,
-    ):
-        logger.warning("Invalid Slack interactivity signature")
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
-    form = parse_qs(body.decode("utf-8"))
-    payload_raw = (form.get("payload") or [""])[0]
-    try:
-        payload = json.loads(payload_raw)
-    except json.JSONDecodeError:
-        logger.exception("Failed to parse Slack interactivity payload")
-        return {"status": "error", "message": "Invalid payload"}
-
-    action = _first_open_swe_option_action(payload.get("actions"))
-    if action is None:
-        return {"status": "ignored", "reason": "No Open SWE action"}
-
-    try:
-        action_value = json.loads(str(action.get("value") or "{}"))
-    except json.JSONDecodeError:
-        return {"status": "ignored", "reason": "Invalid action value"}
-    if action_value.get("type") == "workflow_push_approval":
-        workflow_action = str(action_value.get("action") or "").strip()
-        fingerprint = str(action_value.get("fingerprint") or "").strip()
-        channel = payload.get("channel") if isinstance(payload.get("channel"), dict) else {}
-        message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
-        container = payload.get("container") if isinstance(payload.get("container"), dict) else {}
-        user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
-        channel_id = str(channel.get("id") or container.get("channel_id") or "")
-        thread_ts = str(
-            message.get("thread_ts") or message.get("ts") or container.get("thread_ts") or ""
-        )
-        user_id = str(user.get("id") or "")
-        if not channel_id or not thread_ts or not fingerprint:
-            return {"status": "ignored", "reason": "Missing workflow approval context"}
-
-        thread_id = generate_thread_id_from_slack_thread(channel_id, thread_ts)
-        if not await _slack_user_is_thread_owner(thread_id, user_id):
-            await post_slack_thread_reply(
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                text="Only the person who requested this run can approve workflow file pushes.",
-            )
-            return {"status": "ignored", "reason": "approver is not the thread owner"}
-
-        if workflow_action not in {"approve", "reject"}:
-            return {"status": "ignored", "reason": "Unknown workflow approval action"}
-        approved = workflow_action == "approve"
-        record = await decide_workflow_push_approval(
-            thread_id, fingerprint, approved=approved, actor=user_id
-        )
-        if record is None:
-            await post_slack_thread_reply(
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                text="I couldn't find that workflow approval request. Trigger the push again to create a fresh approval.",
-            )
-            return {"status": "ignored", "reason": "workflow approval not found"}
-        if not approved:
-            await post_slack_thread_reply(
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                text=f"Workflow push rejected for fingerprint `{fingerprint}`. No workflow files will be pushed.",
-            )
-            return {"status": "accepted", "message": "Workflow push rejected"}
-
-        await post_slack_thread_reply(
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            text=f"Workflow push approved for fingerprint `{fingerprint}`. Open SWE will retry the blocked push.",
-        )
-        repo_config = await get_slack_repo_config(channel_id, thread_ts, slack_user_id=user_id)
-        background_tasks.add_task(
-            process_slack_mention,
-            {
-                "channel_id": channel_id,
-                "thread_ts": thread_ts,
-                "event_ts": str(message.get("ts") or ""),
-                "user_id": user_id,
-                "text": (
-                    "The workflow-file push approval was approved. Retry the blocked "
-                    "git push now; do not alter workflow files before pushing."
-                ),
-                "bot_user_id": SLACK_BOT_USER_ID,
-            },
-            repo_config,
-        )
-        return {"status": "accepted", "message": "Workflow push approved, retry queued"}
-
-    if action_value.get("type") == "plan_approval":
-        plan_action = str(action_value.get("action") or "").strip()
-        channel = payload.get("channel") if isinstance(payload.get("channel"), dict) else {}
-        message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
-        container = payload.get("container") if isinstance(payload.get("container"), dict) else {}
-        user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
-        channel_id = str(channel.get("id") or container.get("channel_id") or "")
-        thread_ts = str(
-            message.get("thread_ts") or message.get("ts") or container.get("thread_ts") or ""
-        )
-        user_id = str(user.get("id") or "")
-        if not channel_id or not thread_ts:
-            return {"status": "ignored", "reason": "Missing Slack action context"}
-
-        thread_id = generate_thread_id_from_slack_thread(channel_id, thread_ts)
-
-        if plan_action == "cancel":
-            await post_slack_thread_reply(
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                text="Plan cancelled. No changes will be made.",
-            )
-            return {"status": "accepted", "message": "Plan cancelled"}
-
-        if plan_action == "approve":
-            if not await _slack_user_is_thread_owner(thread_id, user_id):
-                await post_slack_thread_reply(
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                    text="Only the person who requested this plan can approve it. Anyone can reply with feedback or use *Revise Plan*.",
-                )
-                return {"status": "ignored", "reason": "approver is not the thread owner"}
-            await _set_thread_plan_mode(thread_id, False)
-            repo_config = await get_slack_repo_config(channel_id, thread_ts, slack_user_id=user_id)
-            background_tasks.add_task(
-                process_slack_mention,
-                {
-                    "channel_id": channel_id,
-                    "thread_ts": thread_ts,
-                    "event_ts": str(message.get("ts") or ""),
-                    "user_id": user_id,
-                    "text": "Proceed with the approved plan. Implement the changes as described in the plan.",
-                    "bot_user_id": SLACK_BOT_USER_ID,
-                },
-                repo_config,
-            )
-            return {"status": "accepted", "message": "Plan approved, starting implementation"}
-
-        return {"status": "accepted", "message": "Reply to revise the plan"}
-
-    if action_value.get("type") != "open_swe_option":
-        return {"status": "ignored", "reason": "Unknown action type"}
-
-    response = str(action_value.get("response") or "").strip()
-    if not response:
-        return {"status": "ignored", "reason": "Empty response"}
-
-    channel = payload.get("channel") if isinstance(payload.get("channel"), dict) else {}
-    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
-    container = payload.get("container") if isinstance(payload.get("container"), dict) else {}
-    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
-    channel_id = str(channel.get("id") or container.get("channel_id") or "")
-    event_ts = str(
-        action.get("action_ts") or message.get("ts") or container.get("message_ts") or ""
-    )
-    thread_ts = str(
-        message.get("thread_ts") or message.get("ts") or container.get("thread_ts") or event_ts
-    )
-    user_id = str(user.get("id") or "")
-    if not channel_id or not thread_ts or not event_ts or not user_id:
-        return {"status": "ignored", "reason": "Missing Slack action context"}
-
-    repo_config = await get_slack_repo_config(channel_id, thread_ts, slack_user_id=user_id)
-    background_tasks.add_task(
-        process_slack_mention,
-        {
-            "channel_id": channel_id,
-            "thread_ts": thread_ts,
-            "event_ts": event_ts,
-            "user_id": user_id,
-            "text": response,
-            "bot_user_id": SLACK_BOT_USER_ID,
-        },
-        repo_config,
-    )
-    return {"status": "accepted", "message": "Slack option queued"}
-
-
-def _first_open_swe_option_action(actions: Any) -> dict[str, Any] | None:
-    if not isinstance(actions, list):
-        return None
-    for action in actions:
-        if isinstance(action, dict) and action.get("action_id") == "open_swe_option_select":
-            return action
-    return None
-
-
-@app.get("/webhooks/slack")
-async def slack_webhook_verify() -> dict[str, str]:
-    """Verify endpoint for Slack webhook setup."""
-    return {"status": "ok", "message": "Slack webhook endpoint is active"}
 
 
 @app.get("/health")
@@ -1502,8 +609,6 @@ def _build_reviewer_configurable(
     repo_private: bool | None = None,
     re_review: bool = False,
     last_reviewed_sha: str = "",
-    slack_channel_id: str = "",
-    slack_thread_ts: str = "",
 ) -> dict[str, Any]:
     """Assemble the runnable-config ``configurable`` dict for a reviewer run."""
     configurable: dict[str, Any] = {
@@ -1524,11 +629,6 @@ def _build_reviewer_configurable(
         configurable["repo_private"] = repo_private
     if last_reviewed_sha:
         configurable["last_reviewed_sha"] = last_reviewed_sha
-    if slack_channel_id and slack_thread_ts:
-        configurable["slack_thread"] = {
-            "channel_id": slack_channel_id,
-            "thread_ts": slack_thread_ts,
-        }
     return configurable
 
 
@@ -1959,5 +1059,3 @@ from .webhooks.github import (  # noqa: E402,F401
     process_github_review_finding_reply,
     trigger_pr_review_from_ref,
 )
-from .webhooks.linear import process_linear_issue  # noqa: E402,F401
-from .webhooks.slack import process_slack_mention  # noqa: E402,F401
