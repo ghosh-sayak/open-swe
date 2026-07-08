@@ -82,6 +82,17 @@ def _ttl() -> timedelta:
     return timedelta(seconds=_parse_int_env("OPEN_SANDBOX_TTL_SECONDS", DEFAULT_TTL_SECONDS))
 
 
+def _image() -> str:
+    return os.environ.get("OPEN_SANDBOX_IMAGE", DEFAULT_IMAGE)
+
+
+def _resource() -> dict[str, str]:
+    return {
+        "cpu": os.environ.get("OPEN_SANDBOX_CPU", DEFAULT_CPU),
+        "memory": os.environ.get("OPEN_SANDBOX_MEMORY", DEFAULT_MEMORY),
+    }
+
+
 def _map_file_error(exc: Exception) -> str:
     if isinstance(exc, SandboxApiException):
         if exc.status_code == 404:
@@ -156,11 +167,37 @@ class OpensandboxBackend(BaseSandbox):
         self._sandbox.close()
 
 
+_sdk_pool = None
+
+SDK_POOL_NAME = "open-swe-local"
+SDK_POOL_MAX_IDLE = 1
+
+
+def _acquire_from_sdk_pool(connection_config: ConnectionConfigSync, ttl: timedelta):
+    """Claim from the client-side eager-create pool (D4 local option, off by default)."""
+    global _sdk_pool
+    if _sdk_pool is None:
+        from opensandbox import InMemoryPoolStateStore, PoolCreationSpec, SandboxPoolSync
+
+        pool = SandboxPoolSync(
+            pool_name=SDK_POOL_NAME,
+            max_idle=SDK_POOL_MAX_IDLE,
+            state_store=InMemoryPoolStateStore(),
+            connection_config=connection_config,
+            creation_spec=PoolCreationSpec(image=_image(), resource=_resource()),
+        )
+        pool.start()
+        _sdk_pool = pool
+    return _sdk_pool.acquire(sandbox_timeout=ttl)
+
+
 def create_opensandbox_sandbox(sandbox_id: str | None = None) -> SandboxBackendProtocol:
     """Create or reconnect to an OpenSandbox sandbox.
 
-    Reconnects (and renews the TTL) when sandbox_id is given; otherwise creates
-    a fresh sandbox from OPEN_SANDBOX_IMAGE with the configured TTL/resources.
+    Reconnects (and renews the TTL) when sandbox_id is given. Cold-start seam
+    (D4): k8s server-side pool claim via extensions.poolRef when pooling is
+    enabled and OPEN_SANDBOX_POOL_REF is set; local SDK-side pool when enabled
+    without a poolRef; plain create otherwise (the default).
     """
     connection_config = _connection_config()
     ttl = _ttl()
@@ -170,16 +207,29 @@ def create_opensandbox_sandbox(sandbox_id: str | None = None) -> SandboxBackendP
         sandbox.renew(ttl)
         return OpensandboxBackend(sandbox)
 
-    sandbox = SandboxSync.create(
-        image=os.environ.get("OPEN_SANDBOX_IMAGE", DEFAULT_IMAGE),
-        timeout=ttl,
-        resource={
-            "cpu": os.environ.get("OPEN_SANDBOX_CPU", DEFAULT_CPU),
-            "memory": os.environ.get("OPEN_SANDBOX_MEMORY", DEFAULT_MEMORY),
-        },
-        connection_config=connection_config,
-    )
-    logger.info("Created OpenSandbox sandbox %s", sandbox.id)
+    pool_enabled = _parse_bool_env("OPEN_SANDBOX_POOL_ENABLED")
+    pool_ref = os.environ.get("OPEN_SANDBOX_POOL_REF")
+
+    if pool_enabled and pool_ref:
+        sandbox = SandboxSync.create(
+            image=_image(),
+            timeout=ttl,
+            resource=_resource(),
+            extensions={"poolRef": pool_ref},
+            connection_config=connection_config,
+        )
+        logger.info("Claimed OpenSandbox sandbox %s from pool %s", sandbox.id, pool_ref)
+    elif pool_enabled:
+        sandbox = _acquire_from_sdk_pool(connection_config, ttl)
+        logger.info("Acquired OpenSandbox sandbox %s from local SDK pool", sandbox.id)
+    else:
+        sandbox = SandboxSync.create(
+            image=_image(),
+            timeout=ttl,
+            resource=_resource(),
+            connection_config=connection_config,
+        )
+        logger.info("Created OpenSandbox sandbox %s", sandbox.id)
     return OpensandboxBackend(sandbox)
 
 

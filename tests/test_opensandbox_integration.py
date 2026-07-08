@@ -146,6 +146,40 @@ class _FakeSandboxSync:
         self.closed = True
 
 
+class _FakePoolCreationSpec:
+    def __init__(self, *, image, resource=None, env=None, extensions=None, **kwargs):
+        self.image = image
+        self.resource = resource
+        self.env = env
+        self.extensions = extensions
+
+
+class _FakeAcquirePolicy:
+    FAIL_FAST = "FAIL_FAST"
+    DIRECT_CREATE = "DIRECT_CREATE"
+
+
+class _FakeInMemoryPoolStateStore:
+    pass
+
+
+class _FakeSandboxPoolSync:
+    instances: list["_FakeSandboxPoolSync"] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.started = False
+        self.acquire_calls = []
+        _FakeSandboxPoolSync.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def acquire(self, sandbox_timeout=None, **kwargs):
+        self.acquire_calls.append(sandbox_timeout)
+        return _FakeSandboxSync(sandbox_id="uuid-pooled")
+
+
 class _FakeSandboxException(Exception):
     pass
 
@@ -175,6 +209,10 @@ def _install_opensandbox_fakes(monkeypatch):
         "opensandbox.exceptions": types.ModuleType("opensandbox.exceptions"),
     }
     modules["opensandbox.sync"].SandboxSync = _FakeSandboxSync
+    modules["opensandbox"].SandboxPoolSync = _FakeSandboxPoolSync
+    modules["opensandbox"].PoolCreationSpec = _FakePoolCreationSpec
+    modules["opensandbox"].AcquirePolicy = _FakeAcquirePolicy
+    modules["opensandbox"].InMemoryPoolStateStore = _FakeInMemoryPoolStateStore
     modules["opensandbox.models.execd"].RunCommandOpts = _FakeRunCommandOpts
     modules["opensandbox.models.filesystem"].WriteEntry = _FakeWriteEntry
     modules["opensandbox.config.connection_sync"].ConnectionConfigSync = _FakeConnectionConfigSync
@@ -205,6 +243,9 @@ def osb(monkeypatch):
     monkeypatch.delenv("OPEN_SANDBOX_IMAGE", raising=False)
     monkeypatch.delenv("OPEN_SANDBOX_CPU", raising=False)
     monkeypatch.delenv("OPEN_SANDBOX_MEMORY", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_POOL_ENABLED", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_POOL_REF", raising=False)
+    _FakeSandboxPoolSync.instances.clear()
     return _load_opensandbox_module(monkeypatch)
 
 
@@ -502,3 +543,68 @@ def test_validate_sandbox_startup_config_dispatches_opensandbox(monkeypatch):
         assert probed["url"] == "http://localhost:8090/health"
     finally:
         sys.modules.pop("agent.integrations.opensandbox", None)
+
+
+# --------------------------------------------------------------------------- #
+# Pooling create-seam (D4)                                                    #
+# --------------------------------------------------------------------------- #
+def test_cold_start_without_pool_passes_no_extensions(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+
+    assert backend._sandbox.create_kwargs.get("extensions") is None
+    assert _FakeSandboxPoolSync.instances == []
+
+
+def test_k8s_pool_ref_claims_via_extensions(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_POOL_ENABLED", "true")
+    monkeypatch.setenv("OPEN_SANDBOX_POOL_REF", "open-swe-pool")
+
+    backend = osb.create_opensandbox_sandbox(None)
+
+    sandbox = backend._sandbox
+    assert sandbox.origin == "create"
+    assert sandbox.create_kwargs["extensions"] == {"poolRef": "open-swe-pool"}
+    assert _FakeSandboxPoolSync.instances == []
+
+
+def test_pool_ref_without_enabled_flag_is_ignored(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_POOL_REF", "open-swe-pool")
+
+    backend = osb.create_opensandbox_sandbox(None)
+
+    assert backend._sandbox.create_kwargs.get("extensions") is None
+
+
+def test_local_sdk_pool_acquires_when_enabled_without_ref(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_POOL_ENABLED", "true")
+
+    backend = osb.create_opensandbox_sandbox(None)
+
+    assert backend.id == "uuid-pooled"
+    assert len(_FakeSandboxPoolSync.instances) == 1
+    pool = _FakeSandboxPoolSync.instances[0]
+    assert pool.started is True
+    assert pool.acquire_calls == [timedelta(seconds=7200)]
+    spec = pool.kwargs["creation_spec"]
+    assert spec.image == "open-swe-sandbox:latest"
+    assert spec.resource == {"cpu": "2", "memory": "4Gi"}
+
+
+def test_local_sdk_pool_is_reused_across_calls(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_POOL_ENABLED", "true")
+
+    osb.create_opensandbox_sandbox(None)
+    osb.create_opensandbox_sandbox(None)
+
+    assert len(_FakeSandboxPoolSync.instances) == 1
+    assert len(_FakeSandboxPoolSync.instances[0].acquire_calls) == 2
+
+
+def test_reconnect_ignores_pooling(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_POOL_ENABLED", "true")
+    monkeypatch.setenv("OPEN_SANDBOX_POOL_REF", "open-swe-pool")
+
+    backend = osb.create_opensandbox_sandbox("abc-123-uuid")
+
+    assert backend._sandbox.origin == "connect"
+    assert _FakeSandboxPoolSync.instances == []
