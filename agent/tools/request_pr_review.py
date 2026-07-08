@@ -2,7 +2,7 @@ from typing import Any
 
 from langgraph.config import get_config
 
-from agent.utils.slack import parse_github_pr_url
+from agent.utils.github_pr import parse_github_pr_url
 from agent.webapp import trigger_pr_review_from_ref
 
 

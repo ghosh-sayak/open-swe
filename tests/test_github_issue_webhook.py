@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from agent import webapp
 from agent.tools import request_pr_review as request_pr_review_tool
 from agent.utils import slack as slack_utils
-from agent.utils.slack import GitHubPrRef
+from agent.utils.github_pr import GitHubPrRef
 
 request_pr_review_module = importlib.import_module("agent.tools.request_pr_review")
 

@@ -11,7 +11,7 @@ from agent import webapp
 
 from ..reviewer_findings import FindingInteraction, ReviewerPRMeta, ReviewerSlackThread
 from ..utils.github_comments import GitHubAuthError
-from ..utils.slack import GitHubPrRef
+from ..utils.github_pr import GitHubPrRef
 
 
 def build_github_issue_prompt(
