@@ -138,12 +138,27 @@ def set_sandbox_backend(
 
     existing = SANDBOX_BACKENDS.get(thread_id)
     if isinstance(existing, SandboxBackendProxy):
+        _close_replaced_backend(existing.current, sandbox_backend)
         existing.replace_backend(sandbox_backend)
         return existing
 
     proxy = SandboxBackendProxy(sandbox_backend)
     SANDBOX_BACKENDS[thread_id] = proxy
     return proxy
+
+
+def _close_replaced_backend(old: SandboxBackendProtocol, new: SandboxBackendProtocol) -> None:
+    """Release a replaced backend's local transport when it owns one (opensandbox)."""
+    if old is new or not getattr(old, "owns_local_transport", False):
+        return
+    try:
+        old.close()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to close replaced sandbox backend %s",
+            getattr(old, "id", "<unknown>"),
+            exc_info=True,
+        )
 
 
 def clear_sandbox_backend(thread_id: str) -> None:

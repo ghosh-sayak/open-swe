@@ -194,6 +194,14 @@ class _FakeSandboxInternalException(_FakeSandboxException):
     pass
 
 
+class _FakeSandboxReadyTimeoutException(_FakeSandboxException):
+    pass
+
+
+class _FakeSandboxUnhealthyException(_FakeSandboxException):
+    pass
+
+
 def _install_opensandbox_fakes(monkeypatch):
     """Register a fake opensandbox package tree in sys.modules."""
     modules = {
@@ -219,6 +227,10 @@ def _install_opensandbox_fakes(monkeypatch):
     modules["opensandbox.exceptions"].SandboxException = _FakeSandboxException
     modules["opensandbox.exceptions"].SandboxApiException = _FakeSandboxApiException
     modules["opensandbox.exceptions"].SandboxInternalException = _FakeSandboxInternalException
+    modules[
+        "opensandbox.exceptions"
+    ].SandboxReadyTimeoutException = _FakeSandboxReadyTimeoutException
+    modules["opensandbox.exceptions"].SandboxUnhealthyException = _FakeSandboxUnhealthyException
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -314,6 +326,20 @@ def test_invalid_ttl_raises(osb, monkeypatch):
         osb.create_opensandbox_sandbox(None)
 
 
+@pytest.mark.parametrize("value", ["0", "-100"])
+def test_non_positive_ttl_raises(osb, monkeypatch, value):
+    monkeypatch.setenv("OPEN_SANDBOX_TTL_SECONDS", value)
+
+    with pytest.raises(ValueError, match="OPEN_SANDBOX_TTL_SECONDS"):
+        osb.create_opensandbox_sandbox(None)
+
+
+def test_backend_declares_local_transport_ownership(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+
+    assert backend.owns_local_transport is True
+
+
 # --------------------------------------------------------------------------- #
 # execute: exit-code passthrough, stdout/stderr merge, command timeout        #
 # --------------------------------------------------------------------------- #
@@ -366,6 +392,16 @@ def test_execute_honors_explicit_timeout(osb):
 
     _command, opts = backend._sandbox.run_calls[-1]
     assert opts.timeout == timedelta(seconds=45)
+
+
+def test_execute_timeout_zero_maps_to_default_cap(osb):
+    """deepagents' execute tool passes 0 for "no timeout"; a server-side cap must still apply."""
+    backend = osb.create_opensandbox_sandbox(None)
+
+    backend.execute("sleep 999", timeout=0)
+
+    _command, opts = backend._sandbox.run_calls[-1]
+    assert opts.timeout == timedelta(seconds=1800)
 
 
 def test_execute_command_timeout_env_override(osb, monkeypatch):
@@ -471,6 +507,12 @@ def test_non_recoverable_api_status_codes(osb, status):
     assert (
         osb.is_recoverable_sandbox_error(osb.SandboxApiException("x", status_code=status)) is False
     )
+
+
+def test_recoverable_ready_timeout_and_unhealthy(osb):
+    """A dead pod behind a live API record surfaces as ready-timeout/unhealthy on connect."""
+    assert osb.is_recoverable_sandbox_error(osb.SandboxReadyTimeoutException("t")) is True
+    assert osb.is_recoverable_sandbox_error(osb.SandboxUnhealthyException("u")) is True
 
 
 def test_non_sandbox_exception_not_recoverable(osb):
@@ -608,3 +650,23 @@ def test_reconnect_ignores_pooling(osb, monkeypatch):
 
     assert backend._sandbox.origin == "connect"
     assert _FakeSandboxPoolSync.instances == []
+
+
+def test_local_sdk_pool_init_is_thread_safe(osb, monkeypatch):
+    """Two concurrent cold-starts must not each start (and leak) a live pool."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("OPEN_SANDBOX_POOL_ENABLED", "true")
+    original_init = _FakeSandboxPoolSync.__init__
+
+    def slow_init(self, **kwargs):
+        time.sleep(0.05)
+        original_init(self, **kwargs)
+
+    monkeypatch.setattr(_FakeSandboxPoolSync, "__init__", slow_init)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(lambda _: osb.create_opensandbox_sandbox(None), range(2)))
+
+    assert len(_FakeSandboxPoolSync.instances) == 1

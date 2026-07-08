@@ -28,6 +28,7 @@ SANDBOX_UNRECOVERABLE_MESSAGE = "Sandbox became unrecoverable mid-task. Please r
 _CIRCUIT_BREAKER_MARKER = "Sandbox circuit breaker triggered"
 _SANDBOX_RECREATED_AFTER_CLIENT_ERROR = "sandbox_recreated_after_client_error"
 _SANDBOX_UNREACHABLE_ERROR_CLASS = "sandbox_unreachable"
+_UNKNOWN_SANDBOX_ID = "unknown-sandbox"
 _SANDBOX_ID_RE = re.compile(r"\bsb-[A-Za-z0-9-]+\b")
 
 
@@ -70,7 +71,11 @@ def _structured_sandbox_id(text: str) -> str | None:
     if data.get("error_class") != _SANDBOX_UNREACHABLE_ERROR_CLASS:
         return None
     sandbox_id = data.get("sandbox_id")
-    return sandbox_id if isinstance(sandbox_id, str) and sandbox_id else None
+    if isinstance(sandbox_id, str) and sandbox_id:
+        return sandbox_id
+    # The id can be unknown (e.g. process restarted mid-run); the streak must
+    # still count or the breaker can never trip for id-less providers.
+    return _UNKNOWN_SANDBOX_ID
 
 
 def _unreachable_sandbox_id(text: str) -> str | None:

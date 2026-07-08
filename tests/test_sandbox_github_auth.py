@@ -42,17 +42,30 @@ class TestConfigureGithubAuth:
         assert len(backend.commands) == 1
         command = backend.commands[0]
         parts = command.split(" && ")
-        assert len(parts) == 3
+        assert len(parts) == 4
+        # Rotation safety: stale x-access-token url sections are removed first,
+        # otherwise git resolves insteadOf to the FIRST (expired) section forever.
+        assert "--get-regexp" in parts[0]
+        assert "x-access-token" in parts[0]
+        assert "--remove-section" in parts[0]
         assert (
             "git config --global "
             "url.'https://x-access-token:ghs_token123@github.com/'.insteadOf "
             "'https://github.com/'"
-        ) == parts[0]
-        assert parts[1] == "mkdir -p /root/.config/gh"
-        assert "oauth_token: ghs_token123" in parts[2]
-        assert "user: x-access-token" in parts[2]
-        assert "git_protocol: https" in parts[2]
-        assert "> /root/.config/gh/hosts.yml" in parts[2]
+        ) == parts[1]
+        assert parts[2] == "mkdir -p /root/.config/gh"
+        assert "oauth_token: ghs_token123" in parts[3]
+        assert "user: x-access-token" in parts[3]
+        assert "git_protocol: https" in parts[3]
+        assert "> /root/.config/gh/hosts.yml" in parts[3]
+
+    def test_rejects_token_with_unexpected_characters(self) -> None:
+        backend = _FakeBackend()
+
+        with pytest.raises(ValueError, match="unexpected characters"):
+            configure_github_auth(backend, "bad'token$(reboot)")
+
+        assert backend.commands == []
 
     def test_raises_on_nonzero_exit(self) -> None:
         backend = _FakeBackend(exit_code=1)
@@ -104,6 +117,29 @@ class TestCreateSandboxWithProxyOpensandbox:
                 await _create_sandbox_with_proxy()
 
             mock_auth.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_kills_orphaned_sandbox_when_no_token(self) -> None:
+        """The just-created sandbox must not burn resources when auth setup aborts."""
+        with (
+            patch(
+                "agent.server.get_github_app_installation_token_with_expiry",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch("agent.server.create_sandbox") as mock_create,
+            patch("agent.server.configure_github_auth"),
+            patch.dict("os.environ", {"SANDBOX_TYPE": "opensandbox"}),
+        ):
+            backend = MagicMock(id="uuid-orphan")
+            mock_create.return_value = backend
+
+            from agent.server import _create_sandbox_with_proxy
+
+            with pytest.raises(ValueError, match="installation token is unavailable"):
+                await _create_sandbox_with_proxy()
+
+            backend.kill.assert_called_once()
 
 
 class TestRefreshGithubProxyOpensandbox:

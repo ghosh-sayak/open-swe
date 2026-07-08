@@ -67,7 +67,7 @@ preload the image on nodes) for large first pulls.
 
 ## Failure semantics (plan D5/D6)
 
-Dead/unreachable sandboxes (connection errors, API 404/5xx — e.g. TTL expiry) are recreated
+Dead/unreachable sandboxes (connection errors, API 404/5xx — e.g. TTL expiry — and connect ready/health timeouts) are recreated
 automatically at the start-of-run ping, on reconnect, and mid-run via `ToolErrorMiddleware`;
 auth/config errors (401/403, bad env) are surfaced instead — recreation is destructive and is
 never triggered by a non-sandbox bug. The circuit breaker recognizes the structured

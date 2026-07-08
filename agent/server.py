@@ -242,6 +242,7 @@ async def _create_sandbox_with_proxy(
         if not token:
             msg = "Cannot configure git auth: GitHub App installation token is unavailable"
             logger.error(msg)
+            await _kill_sandbox_best_effort(sandbox_backend)
             raise ValueError(msg)
         # No GitHub proxy on this provider: write hosts.yml + insteadOf into the
         # sandbox over exec. The image's gh wrapper strips the prompts' dummy
@@ -356,6 +357,17 @@ async def _refresh_github_proxy_or_recreate(
             repo=repo,
         )
     return sandbox_backend
+
+
+async def _kill_sandbox_best_effort(sandbox_backend: SandboxBackendProtocol) -> None:
+    """Tear down a just-created sandbox we are abandoning before it was ever used."""
+    kill = getattr(unwrap_sandbox_backend(sandbox_backend), "kill", None)
+    if kill is None:
+        return
+    try:
+        await asyncio.to_thread(kill)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to kill orphaned sandbox %s", sandbox_backend.id, exc_info=True)
 
 
 async def _renew_sandbox_ttl_if_supported(sandbox_backend: SandboxBackendProtocol) -> None:

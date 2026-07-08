@@ -88,6 +88,35 @@ def test_download_missing_file_partial_success(backend):
     assert downloads[0].error is not None
 
 
+def test_github_auth_rotation_resolves_to_newest_token(backend):
+    """Refresh with a rotated token must win: git resolves insteadOf to the NEW token."""
+    from agent.utils.sandbox_github_auth import configure_github_auth
+
+    configure_github_auth(backend, "ghs_OLDTOKEN000000")
+    configure_github_auth(backend, "ghs_NEWTOKEN111111")
+
+    resolved = backend.execute("git ls-remote --get-url https://github.com/example/repo.git")
+    assert resolved.exit_code == 0
+    assert "ghs_NEWTOKEN111111" in resolved.output
+    assert "ghs_OLDTOKEN000000" not in resolved.output
+
+    sections = backend.execute(
+        "git config --global --name-only --get-regexp "
+        "'^url\\.https://x-access-token:.*\\.insteadof$' | wc -l"
+    )
+    assert sections.output.strip() == "1", sections.output
+
+    hosts = backend.execute("cat /root/.config/gh/hosts.yml")
+    assert "ghs_NEWTOKEN111111" in hosts.output
+    assert "ghs_OLDTOKEN000000" not in hosts.output
+
+    backend.execute(
+        "for s in $(git config --global --name-only --get-regexp "
+        "'^url\\.https://x-access-token:.*\\.insteadof$' 2>/dev/null "
+        "| sed 's/\\.insteadof$//'); do git config --global --remove-section \"$s\"; done"
+    )
+
+
 def test_reconnect_by_id_and_renew(backend):
     from agent.integrations.opensandbox import create_opensandbox_sandbox
 

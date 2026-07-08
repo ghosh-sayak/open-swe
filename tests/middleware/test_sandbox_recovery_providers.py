@@ -68,6 +68,12 @@ def _install_opensandbox_fakes(monkeypatch):
     modules["opensandbox.exceptions"].SandboxException = _FakeSandboxException
     modules["opensandbox.exceptions"].SandboxApiException = _FakeSandboxApiException
     modules["opensandbox.exceptions"].SandboxInternalException = _FakeSandboxInternalException
+    modules["opensandbox.exceptions"].SandboxReadyTimeoutException = type(
+        "SandboxReadyTimeoutException", (_FakeSandboxException,), {}
+    )
+    modules["opensandbox.exceptions"].SandboxUnhealthyException = type(
+        "SandboxUnhealthyException", (_FakeSandboxException,), {}
+    )
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -570,3 +576,38 @@ async def test_reconnect_failure_legacy_provider_still_self_heals(monkeypatch) -
 
     assert result.id == "modal-new"
     mock_create_proxy.assert_awaited_once()
+
+
+def test_circuit_breaker_trips_on_structured_failures_without_id() -> None:
+    """Process-restart scenarios can leave no sandbox_id; the breaker must still trip."""
+    middleware = SandboxCircuitBreakerMiddleware(threshold=2)
+
+    def unreachable_without_id(tool_call_id: str) -> ToolMessage:
+        return ToolMessage(
+            content=json.dumps(
+                {
+                    "error": "Sandbox request failed",
+                    "error_type": "SandboxInternalException",
+                    "error_class": "sandbox_unreachable",
+                    "status": "error",
+                }
+            ),
+            tool_call_id=tool_call_id,
+            status="error",
+        )
+
+    messages = [
+        HumanMessage(content="please fix this"),
+        AIMessage(content="", tool_calls=[{"name": "ls", "args": {}, "id": "tc1"}]),
+        unreachable_without_id("tc1"),
+        AIMessage(content="", tool_calls=[{"name": "grep", "args": {}, "id": "tc2"}]),
+        unreachable_without_id("tc2"),
+        AIMessage(content="", tool_calls=[{"name": "execute", "args": {}, "id": "tc3"}]),
+        unreachable_without_id("tc3"),
+    ]
+
+    result = middleware.before_model({"messages": messages}, MagicMock())
+
+    assert result is not None
+    assert result["jump_to"] == "end"
+    assert "Sandbox circuit breaker triggered" in result["messages"][0].content

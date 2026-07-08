@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import posixpath
+import threading
 from datetime import timedelta
 
 import httpx
@@ -24,7 +25,12 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 from opensandbox.config.connection_sync import ConnectionConfigSync
-from opensandbox.exceptions import SandboxApiException, SandboxInternalException
+from opensandbox.exceptions import (
+    SandboxApiException,
+    SandboxInternalException,
+    SandboxReadyTimeoutException,
+    SandboxUnhealthyException,
+)
 from opensandbox.models.execd import RunCommandOpts
 from opensandbox.models.filesystem import WriteEntry
 from opensandbox.sync import SandboxSync
@@ -42,14 +48,18 @@ HEALTH_PROBE_TIMEOUT_SECONDS = 5.0
 RECOVERABLE_API_STATUS_CODES = frozenset({404, 500, 502, 503, 504})
 
 
-def _parse_int_env(name: str, default: int) -> int:
+def _parse_int_env(name: str, default: int, *, positive: bool = False) -> int:
     raw = os.environ.get(name)
     if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError as e:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from e
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except ValueError as e:
+            raise ValueError(f"{name} must be an integer, got {raw!r}") from e
+    if positive and value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
 
 
 def _parse_bool_env(name: str, default: bool = False) -> bool:
@@ -79,7 +89,9 @@ def _connection_config() -> ConnectionConfigSync:
 
 
 def _ttl() -> timedelta:
-    return timedelta(seconds=_parse_int_env("OPEN_SANDBOX_TTL_SECONDS", DEFAULT_TTL_SECONDS))
+    return timedelta(
+        seconds=_parse_int_env("OPEN_SANDBOX_TTL_SECONDS", DEFAULT_TTL_SECONDS, positive=True)
+    )
 
 
 def _image() -> str:
@@ -105,10 +117,14 @@ def _map_file_error(exc: Exception) -> str:
 class OpensandboxBackend(BaseSandbox):
     """deepagents sandbox backend over an OpenSandbox SandboxSync instance."""
 
+    # Each SandboxSync owns a local httpx transport; set_sandbox_backend closes
+    # replaced backends that declare this so recreation doesn't leak connections.
+    owns_local_transport = True
+
     def __init__(self, sandbox: SandboxSync) -> None:
         self._sandbox = sandbox
         self._command_timeout_seconds = _parse_int_env(
-            "OPEN_SANDBOX_COMMAND_TIMEOUT_SECONDS", DEFAULT_COMMAND_TIMEOUT_SECONDS
+            "OPEN_SANDBOX_COMMAND_TIMEOUT_SECONDS", DEFAULT_COMMAND_TIMEOUT_SECONDS, positive=True
         )
 
     @property
@@ -118,7 +134,8 @@ class OpensandboxBackend(BaseSandbox):
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         # Always enforce a server-side command timeout: the sync SSE read has no
         # client-side deadline, so an unbounded command would pin a worker thread.
-        effective = timeout if timeout is not None else self._command_timeout_seconds
+        # timeout=0 means "no timeout" to deepagents' execute tool — cap it too.
+        effective = timeout if timeout else self._command_timeout_seconds
         execution = self._sandbox.commands.run(
             command,
             opts=RunCommandOpts(timeout=timedelta(seconds=effective)),
@@ -168,6 +185,7 @@ class OpensandboxBackend(BaseSandbox):
 
 
 _sdk_pool = None
+_sdk_pool_lock = threading.Lock()
 
 SDK_POOL_NAME = "open-swe-local"
 SDK_POOL_MAX_IDLE = 1
@@ -177,17 +195,22 @@ def _acquire_from_sdk_pool(connection_config: ConnectionConfigSync, ttl: timedel
     """Claim from the client-side eager-create pool (D4 local option, off by default)."""
     global _sdk_pool
     if _sdk_pool is None:
-        from opensandbox import InMemoryPoolStateStore, PoolCreationSpec, SandboxPoolSync
+        # The factory runs on asyncio.to_thread workers; without the lock two
+        # concurrent cold-starts would each start() a pool and leak one
+        # reconciler thread + its warm sandbox.
+        with _sdk_pool_lock:
+            if _sdk_pool is None:
+                from opensandbox import InMemoryPoolStateStore, PoolCreationSpec, SandboxPoolSync
 
-        pool = SandboxPoolSync(
-            pool_name=SDK_POOL_NAME,
-            max_idle=SDK_POOL_MAX_IDLE,
-            state_store=InMemoryPoolStateStore(),
-            connection_config=connection_config,
-            creation_spec=PoolCreationSpec(image=_image(), resource=_resource()),
-        )
-        pool.start()
-        _sdk_pool = pool
+                pool = SandboxPoolSync(
+                    pool_name=SDK_POOL_NAME,
+                    max_idle=SDK_POOL_MAX_IDLE,
+                    state_store=InMemoryPoolStateStore(),
+                    connection_config=connection_config,
+                    creation_spec=PoolCreationSpec(image=_image(), resource=_resource()),
+                )
+                pool.start()
+                _sdk_pool = pool
     return _sdk_pool.acquire(sandbox_timeout=ttl)
 
 
@@ -236,10 +259,15 @@ def create_opensandbox_sandbox(sandbox_id: str | None = None) -> SandboxBackendP
 def is_recoverable_sandbox_error(exc: BaseException) -> bool:
     """Whether exc indicates a dead/unreachable sandbox that recreation can fix.
 
-    Auth/validation failures (401/403/4xx other than 404) are NOT recoverable:
-    recreation is destructive (the workspace is lost) and would not fix them.
+    Ready-timeout/unhealthy cover a dead pod behind a still-live API record
+    (connect polls health and raises these instead of a 404). Auth/validation
+    failures (401/403/4xx other than 404) are NOT recoverable: recreation is
+    destructive (the workspace is lost) and would not fix them.
     """
-    if isinstance(exc, SandboxInternalException):
+    if isinstance(
+        exc,
+        (SandboxInternalException, SandboxReadyTimeoutException, SandboxUnhealthyException),
+    ):
         return True
     if isinstance(exc, SandboxApiException):
         return exc.status_code in RECOVERABLE_API_STATUS_CODES
@@ -254,8 +282,10 @@ def _probe_health(url: str) -> None:
 def validate_startup_config() -> None:
     """Fail fast at server startup: env present + OpenSandbox server reachable."""
     _require_api_key()
-    _parse_int_env("OPEN_SANDBOX_TTL_SECONDS", DEFAULT_TTL_SECONDS)
-    _parse_int_env("OPEN_SANDBOX_COMMAND_TIMEOUT_SECONDS", DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    _parse_int_env("OPEN_SANDBOX_TTL_SECONDS", DEFAULT_TTL_SECONDS, positive=True)
+    _parse_int_env(
+        "OPEN_SANDBOX_COMMAND_TIMEOUT_SECONDS", DEFAULT_COMMAND_TIMEOUT_SECONDS, positive=True
+    )
     url = f"http://{_get_domain()}/health"
     try:
         _probe_health(url)
