@@ -304,11 +304,12 @@ async def _refresh_github_proxy(
 def _should_recreate_after_lifecycle_failure(e: Exception) -> bool:
     """Whether a refresh/reconnect failure warrants a destructive recreate (D5).
 
-    Langsmith keeps its historical blanket-recreate on these lifecycle paths
-    (zero-delta); other providers recreate only when the predicate classifies
-    the sandbox as dead. Fail-closed: a broken predicate never recreates.
+    Only the predicate-aware provider (opensandbox) is gated. Langsmith and the
+    remaining providers keep their historical blanket-recreate on these
+    lifecycle paths (zero-delta / reconnect self-healing preserved). Fail-closed:
+    a broken predicate never recreates.
     """
-    if os.getenv("SANDBOX_TYPE", "langsmith") == "langsmith":
+    if os.getenv("SANDBOX_TYPE", "langsmith") != "opensandbox":
         return True
     try:
         return get_recoverable_predicate()(e)

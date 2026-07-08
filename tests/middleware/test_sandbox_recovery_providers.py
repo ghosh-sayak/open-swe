@@ -538,3 +538,35 @@ def test_circuit_breaker_survives_pathological_json() -> None:
     ]
 
     assert middleware.before_model({"messages": messages}, MagicMock()) is None
+
+
+@pytest.mark.asyncio
+async def test_reconnect_failure_legacy_provider_still_self_heals(monkeypatch) -> None:
+    """Providers without a recoverability predicate keep baseline reconnect self-healing."""
+    monkeypatch.setenv("SANDBOX_TYPE", "modal")
+    replacement = MagicMock(id="modal-new")
+
+    with (
+        patch(
+            "agent.server.get_sandbox_id_from_metadata",
+            new_callable=AsyncMock,
+            return_value="modal-existing",
+        ),
+        patch("agent.server.create_sandbox", side_effect=RuntimeError("sandbox deleted")),
+        patch(
+            "agent.server._create_sandbox_with_proxy",
+            new_callable=AsyncMock,
+            return_value=replacement,
+        ) as mock_create_proxy,
+        patch("agent.server._configure_git_identity", new_callable=AsyncMock),
+        patch("agent.server.client") as mock_client,
+        patch.dict("agent.server.SANDBOX_BACKENDS", {}, clear=True),
+    ):
+        mock_client.threads.update = AsyncMock()
+
+        from agent.server import ensure_sandbox_for_thread
+
+        result = await ensure_sandbox_for_thread("thread-1")
+
+    assert result.id == "modal-new"
+    mock_create_proxy.assert_awaited_once()
