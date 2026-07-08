@@ -171,7 +171,7 @@ def test_falls_back_to_bot_for_github_source(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_falls_back_to_bot_when_user_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_config(monkeypatch, {"source": "slack", "github_login": "johannes117"})
+    _set_config(monkeypatch, {"source": "github", "github_login": "johannes117"})
 
     from agent.dashboard import profiles
 
@@ -192,7 +192,7 @@ def test_falls_back_to_bot_when_user_token_missing(monkeypatch: pytest.MonkeyPat
 
 
 def test_returns_existing_pr_on_422(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_config(monkeypatch, {"source": "slack", "github_login": "johannes117"})
+    _set_config(monkeypatch, {"source": "github", "github_login": "johannes117"})
 
     from agent.dashboard import profiles
 
@@ -219,7 +219,7 @@ def test_returns_existing_pr_on_422(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_error_surfaced_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_config(monkeypatch, {"source": "slack", "github_login": "johannes117"})
+    _set_config(monkeypatch, {"source": "github", "github_login": "johannes117"})
 
     from agent.dashboard import profiles
 
@@ -364,8 +364,7 @@ def test_does_not_duplicate_existing_references(monkeypatch: pytest.MonkeyPatch)
     _set_config(
         monkeypatch,
         {
-            "source": "slack",
-            "slack_thread": {"channel_id": "C123", "thread_ts": "1700000000.000100"},
+            "source": "github",
         },
     )
     _stub_token(monkeypatch)

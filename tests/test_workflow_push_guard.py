@@ -51,7 +51,6 @@ class _Runtime:
     config = {
         "configurable": {
             "thread_id": "thread-1",
-            "slack_thread": {"channel_id": "C123", "thread_ts": "1700000000.000100"},
         }
     }
 

@@ -698,7 +698,7 @@ def test_trigger_pr_review_from_ref_respects_dashboard_opt_in(monkeypatch) -> No
                 number=1,
                 url="https://github.com/langchain-ai/blocked/pull/1",
             ),
-            source="slack",
+            source="github",
         )
     )
 

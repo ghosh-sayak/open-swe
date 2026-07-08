@@ -41,7 +41,7 @@ def test_outcome_from_status_open_is_none() -> None:
 def test_outcome_from_score() -> None:
     assert outcome_from_score(1.0, source="github") == (TRUE_POSITIVE, "github_thumbs_up")
     assert outcome_from_score(0.0, source="github") == (FALSE_POSITIVE, "github_thumbs_down")
-    assert outcome_from_score(1.0, source="slack") == (TRUE_POSITIVE, "slack_thumbs_up")
+    assert outcome_from_score(1.0, source="github") == (TRUE_POSITIVE, "github_thumbs_up")
     assert outcome_from_score(None, source="github") is None
 
 

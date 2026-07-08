@@ -167,7 +167,7 @@ class TestEnsureNoEmptyMsgNotify:
 
         with patch(
             "agent.middleware.ensure_no_empty_msg.get_config",
-            return_value={"configurable": {"source": "slack"}},
+            return_value={"configurable": {"source": "github"}},
         ):
             result = ensure_no_empty_msg.after_model(state, self._make_runtime())
 

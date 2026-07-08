@@ -56,7 +56,7 @@ def test_resolve_github_token_dashboard_uses_dashboard_store(
 def test_resolve_github_token_dashboard_ignores_stale_thread_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Slack thread ids are shared, so a prior user's cached token must NOT be
+    # Thread ids can be shared, so a prior user's cached token must NOT be
     # returned. Resolution always goes by github_login via the dashboard store.
     _stub_dashboard_store(
         monkeypatch,
@@ -110,7 +110,7 @@ def test_resolve_github_token_dashboard_no_token_falls_back_to_bot_in_bot_only_m
     assert (token, expires_at) == ("bot-tok", None)
 
 
-@pytest.mark.parametrize("source", ["github", "linear"])
+@pytest.mark.parametrize("source", ["github", "github_push"])
 def test_resolve_github_token_bot_only_mode_github_uses_bot(
     monkeypatch: pytest.MonkeyPatch, source: str
 ) -> None:
