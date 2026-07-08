@@ -12,6 +12,7 @@ SANDBOX_FACTORIES: dict[str, tuple[str, str]] = {
     "modal": ("agent.integrations.modal", "create_modal_sandbox"),
     "runloop": ("agent.integrations.runloop", "create_runloop_sandbox"),
     "local": ("agent.integrations.local", "create_local_sandbox"),
+    "opensandbox": ("agent.integrations.opensandbox", "create_opensandbox_sandbox"),
 }
 
 
@@ -35,7 +36,8 @@ def create_sandbox(
     """Create or reconnect to a sandbox using the configured provider.
 
     The provider is selected via the SANDBOX_TYPE environment variable.
-    Supported values: langsmith (default), daytona, modal, runloop, local.
+    Supported values: langsmith (default), daytona, modal, runloop, local,
+    opensandbox.
 
     Args:
         sandbox_id: Optional existing sandbox ID to reconnect to.
@@ -53,6 +55,35 @@ def create_sandbox(
     return factory(sandbox_id)
 
 
+def _never_recoverable(_exc: BaseException) -> bool:
+    return False
+
+
+def _langsmith_is_recoverable(exc: BaseException) -> bool:
+    from langsmith.sandbox import SandboxClientError
+
+    return isinstance(exc, SandboxClientError)
+
+
+def get_recoverable_predicate() -> Callable[[BaseException], bool]:
+    """Resolve the active provider's is-this-sandbox-dead predicate (D5).
+
+    Keyed off SANDBOX_TYPE like SANDBOX_FACTORIES. Recreation is destructive
+    (the workspace is lost), so providers without recovery semantics resolve to
+    a never-recreate predicate, and a plain TypeError/ValueError never matches.
+    The langsmith predicate is exactly the exception the recovery paths
+    historically caught, so that path has zero behavioral change.
+    """
+    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
+    if sandbox_type == "langsmith":
+        return _langsmith_is_recoverable
+    if sandbox_type == "opensandbox":
+        from agent.integrations.opensandbox import is_recoverable_sandbox_error
+
+        return is_recoverable_sandbox_error
+    return _never_recoverable
+
+
 def validate_sandbox_startup_config() -> None:
     """Validate the configured sandbox provider's env vars at server startup.
 
@@ -65,3 +96,7 @@ def validate_sandbox_startup_config() -> None:
         from agent.integrations.langsmith import LangSmithProvider
 
         LangSmithProvider.validate_startup_config()
+    elif sandbox_type == "opensandbox":
+        from agent.integrations.opensandbox import validate_startup_config
+
+        validate_startup_config()

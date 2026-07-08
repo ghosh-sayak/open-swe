@@ -20,11 +20,22 @@ from langchain_core.messages import ToolMessage
 from langgraph.config import get_config
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
-from langsmith.sandbox import SandboxClientError
+
+from agent.utils.sandbox import get_recoverable_predicate
 
 logger = logging.getLogger(__name__)
 
 SANDBOX_RECREATED_AFTER_CLIENT_ERROR = "sandbox_recreated_after_client_error"
+SANDBOX_UNREACHABLE_ERROR_CLASS = "sandbox_unreachable"
+
+
+def _is_recoverable_sandbox_failure(e: Exception) -> bool:
+    """Fail-closed predicate wrapper: a broken predicate routes to the generic path."""
+    try:
+        return get_recoverable_predicate()(e)
+    except Exception:  # noqa: BLE001
+        logger.exception("Recoverability predicate failed; using generic error path")
+        return False
 
 
 def _get_name(candidate: object) -> str | None:
@@ -49,12 +60,22 @@ def _extract_tool_name(request: ToolCallRequest | None) -> str | None:
     return None
 
 
-def _to_error_payload(e: Exception, request: ToolCallRequest | None = None) -> dict[str, str]:
+def _to_error_payload(
+    e: Exception,
+    request: ToolCallRequest | None = None,
+    *,
+    error_class: str | None = None,
+    sandbox_id: str | None = None,
+) -> dict[str, str]:
     data: dict[str, str] = {
         "error": str(e),
         "error_type": e.__class__.__name__,
         "status": "error",
     }
+    if error_class:
+        data["error_class"] = error_class
+    if sandbox_id:
+        data["sandbox_id"] = sandbox_id
     tool_name = _extract_tool_name(request)
     if tool_name:
         data["name"] = tool_name
@@ -62,13 +83,14 @@ def _to_error_payload(e: Exception, request: ToolCallRequest | None = None) -> d
 
 
 def _to_sandbox_recreated_payload(
-    e: SandboxClientError,
+    e: Exception,
     sandbox_id: str,
     request: ToolCallRequest | None = None,
 ) -> dict[str, str]:
     data: dict[str, str] = {
         "status": "error",
         "error_type": e.__class__.__name__,
+        "error_class": SANDBOX_UNREACHABLE_ERROR_CLASS,
         "previous_error": str(e),
         "recovery": SANDBOX_RECREATED_AFTER_CLIENT_ERROR,
         "sandbox_id": sandbox_id,
@@ -89,6 +111,20 @@ def _get_tool_call_id(request: ToolCallRequest) -> str | None:
     if isinstance(request.tool_call, dict):
         return request.tool_call.get("id")
     return None
+
+
+def _get_current_sandbox_id(thread_id: str | None) -> str | None:
+    """Read the failing sandbox's id from the per-thread proxy (no text scraping)."""
+    if not thread_id:
+        return None
+    try:
+        from agent.utils.sandbox_state import SANDBOX_BACKENDS
+
+        backend = SANDBOX_BACKENDS.get(thread_id)
+        return backend.id if backend is not None else None
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to read current sandbox id for thread %s", thread_id)
+        return None
 
 
 def _get_thread_id(request: ToolCallRequest) -> str | None:
@@ -135,7 +171,7 @@ def _recreate_sandbox_for_thread_sync(thread_id: str) -> str:
 
 
 def _sandbox_recreated_tool_message(
-    e: SandboxClientError,
+    e: Exception,
     sandbox_id: str,
     request: ToolCallRequest,
 ) -> ToolMessage:
@@ -147,8 +183,14 @@ def _sandbox_recreated_tool_message(
     )
 
 
-def _generic_error_tool_message(e: Exception, request: ToolCallRequest) -> ToolMessage:
-    data = _to_error_payload(e, request)
+def _generic_error_tool_message(
+    e: Exception,
+    request: ToolCallRequest,
+    *,
+    error_class: str | None = None,
+    sandbox_id: str | None = None,
+) -> ToolMessage:
+    data = _to_error_payload(e, request, error_class=error_class, sandbox_id=sandbox_id)
     return ToolMessage(
         content=json.dumps(data),
         tool_call_id=_get_tool_call_id(request),
@@ -173,19 +215,25 @@ class ToolErrorMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command:
         try:
             return handler(request)
-        except SandboxClientError as e:
+        except Exception as e:
+            if not _is_recoverable_sandbox_failure(e):
+                logger.exception("Error during tool call handling; request=%r", request)
+                return _generic_error_tool_message(e, request)
             logger.exception("Sandbox error during tool call handling; request=%r", request)
             thread_id = _get_thread_id(request)
+            dead_sandbox_id = _get_current_sandbox_id(thread_id)
             if thread_id:
                 try:
                     sandbox_id = _recreate_sandbox_for_thread_sync(thread_id)
                     return _sandbox_recreated_tool_message(e, sandbox_id, request)
                 except Exception:
                     logger.exception("Failed to recreate sandbox for thread %s", thread_id)
-            return _generic_error_tool_message(e, request)
-        except Exception as e:
-            logger.exception("Error during tool call handling; request=%r", request)
-            return _generic_error_tool_message(e, request)
+            return _generic_error_tool_message(
+                e,
+                request,
+                error_class=SANDBOX_UNREACHABLE_ERROR_CLASS,
+                sandbox_id=dead_sandbox_id,
+            )
 
     async def awrap_tool_call(
         self,
@@ -194,16 +242,22 @@ class ToolErrorMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command:
         try:
             return await handler(request)
-        except SandboxClientError as e:
+        except Exception as e:
+            if not _is_recoverable_sandbox_failure(e):
+                logger.exception("Error during tool call handling; request=%r", request)
+                return _generic_error_tool_message(e, request)
             logger.exception("Sandbox error during tool call handling; request=%r", request)
             thread_id = _get_thread_id(request)
+            dead_sandbox_id = _get_current_sandbox_id(thread_id)
             if thread_id:
                 try:
                     sandbox_id = await _recreate_sandbox_for_thread(thread_id)
                     return _sandbox_recreated_tool_message(e, sandbox_id, request)
                 except Exception:
                     logger.exception("Failed to recreate sandbox for thread %s", thread_id)
-            return _generic_error_tool_message(e, request)
-        except Exception as e:
-            logger.exception("Error during tool call handling; request=%r", request)
-            return _generic_error_tool_message(e, request)
+            return _generic_error_tool_message(
+                e,
+                request,
+                error_class=SANDBOX_UNREACHABLE_ERROR_CLASS,
+                sandbox_id=dead_sandbox_id,
+            )

@@ -44,6 +44,7 @@ from .tools.save_review_style import save_review_style_prompt
 from .utils.analyzer_skills import SKILLS_ROUTE, skill_path_for_mode
 from .utils.github_app import get_github_app_installation_token
 from .utils.model import DEFAULT_LLM_REASONING, make_model, provider_model_kwargs
+from .utils.sandbox_github_auth import configure_github_auth
 from .utils.sandbox_paths import aresolve_sandbox_work_dir
 from .utils.sandbox_state import unwrap_sandbox_backend
 from .utils.tracing import REVIEW_TRACING_PROJECT, traced_graph_factory
@@ -81,9 +82,13 @@ async def _configure_sandbox_github_proxy(
     sandbox_backend: SandboxBackendProtocol,
     github_token: str,
 ) -> None:
-    if os.getenv("SANDBOX_TYPE", "langsmith") != "langsmith":
-        return
+    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
     backend = unwrap_sandbox_backend(sandbox_backend)
+    if sandbox_type == "opensandbox":
+        await asyncio.to_thread(configure_github_auth, backend, github_token)
+        return
+    if sandbox_type != "langsmith":
+        return
     await asyncio.to_thread(_configure_github_proxy, backend.id, github_token)
 
 

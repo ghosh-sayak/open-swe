@@ -29,7 +29,6 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgent
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.language_models import BaseChatModel
-from langsmith.sandbox import SandboxClientError
 
 from .dashboard.admin import is_observability_authorized
 from .dashboard.agent_overrides import (
@@ -108,7 +107,8 @@ from .utils.model import (
     make_model,
     provider_model_kwargs,
 )
-from .utils.sandbox import create_sandbox
+from .utils.sandbox import create_sandbox, get_recoverable_predicate
+from .utils.sandbox_github_auth import configure_github_auth
 from .utils.sandbox_paths import aresolve_sandbox_work_dir
 from .utils.tracing import AGENT_TRACING_PROJECT, traced_graph_factory
 
@@ -237,6 +237,29 @@ async def _create_sandbox_with_proxy(
             permissions=None if github_proxy_token else RUNTIME_PROXY_TOKEN_PERMISSIONS,
         )
 
+    elif sandbox_type == "opensandbox":
+        token, expires_at = await _resolve_proxy_token(github_proxy_token)
+        if not token:
+            msg = "Cannot configure git auth: GitHub App installation token is unavailable"
+            logger.error(msg)
+            await _kill_sandbox_best_effort(sandbox_backend)
+            raise ValueError(msg)
+        # No GitHub proxy on this provider: write hosts.yml + insteadOf into the
+        # sandbox over exec. The image's gh wrapper strips the prompts' dummy
+        # GH_TOKEN so gh falls back to these credentials.
+        await asyncio.to_thread(configure_github_auth, sandbox_backend, token)
+        # Record expiry so the before-model hook rewrites hosts.yml before the
+        # GitHub-capped 1h token lapses on a long single run.
+        record_proxy_token_expiry(
+            thread_id,
+            expires_at,
+            repositories=github_proxy_repositories,
+            permissions=None if github_proxy_token else RUNTIME_PROXY_TOKEN_PERMISSIONS,
+        )
+        logger.info(
+            "Configured git and gh credentials in OpenSandbox sandbox %s", sandbox_backend.id
+        )
+
     return sandbox_backend
 
 
@@ -247,8 +270,31 @@ async def _refresh_github_proxy(
     thread_id: str | None = None,
     github_proxy_repositories: Sequence[str] | None = None,
 ) -> None:
-    """Refresh GitHub proxy credentials for reused LangSmith sandboxes."""
-    if os.getenv("SANDBOX_TYPE", "langsmith") != "langsmith":
+    """Refresh GitHub credentials for reused sandboxes (proxy or hosts.yml)."""
+    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
+
+    if sandbox_type == "opensandbox":
+        token, expires_at = await _resolve_proxy_token(github_proxy_token)
+        if not token:
+            logger.warning(
+                "Skipping GitHub auth refresh for sandbox %s: installation token unavailable",
+                sandbox_backend.id,
+            )
+            return
+        current_backend = unwrap_sandbox_backend(sandbox_backend)
+        await asyncio.to_thread(configure_github_auth, current_backend, token)
+        record_proxy_token_expiry(
+            thread_id,
+            expires_at,
+            repositories=github_proxy_repositories,
+            permissions=None if github_proxy_token else RUNTIME_PROXY_TOKEN_PERMISSIONS,
+        )
+        logger.info(
+            "Refreshed git and gh credentials in OpenSandbox sandbox %s", current_backend.id
+        )
+        return
+
+    if sandbox_type != "langsmith":
         return
 
     token, expires_at = await _resolve_proxy_token(github_proxy_token)
@@ -270,6 +316,23 @@ async def _refresh_github_proxy(
     )
 
 
+def _should_recreate_after_lifecycle_failure(e: Exception) -> bool:
+    """Whether a refresh/reconnect failure warrants a destructive recreate (D5).
+
+    Only the predicate-aware provider (opensandbox) is gated. Langsmith and the
+    remaining providers keep their historical blanket-recreate on these
+    lifecycle paths (zero-delta / reconnect self-healing preserved). Fail-closed:
+    a broken predicate never recreates.
+    """
+    if os.getenv("SANDBOX_TYPE", "langsmith") != "opensandbox":
+        return True
+    try:
+        return get_recoverable_predicate()(e)
+    except Exception:  # noqa: BLE001
+        logger.exception("Recoverability predicate failed; treating error as non-recoverable")
+        return False
+
+
 async def _refresh_github_proxy_or_recreate(
     sandbox_backend: SandboxBackendProtocol,
     thread_id: str,
@@ -285,7 +348,16 @@ async def _refresh_github_proxy_or_recreate(
             thread_id=thread_id,
             github_proxy_repositories=github_proxy_repositories,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if not _should_recreate_after_lifecycle_failure(e):
+            logger.warning(
+                "GitHub auth refresh failed for sandbox %s on thread %s; keeping the "
+                "sandbox (refresh retries on the next run)",
+                sandbox_backend.id,
+                thread_id,
+                exc_info=True,
+            )
+            return sandbox_backend
         logger.warning(
             "Failed to refresh GitHub proxy for sandbox %s on thread %s, recreating sandbox",
             sandbox_backend.id,
@@ -299,6 +371,32 @@ async def _refresh_github_proxy_or_recreate(
             repo=repo,
         )
     return sandbox_backend
+
+
+async def _kill_sandbox_best_effort(sandbox_backend: SandboxBackendProtocol) -> None:
+    """Tear down a just-created sandbox we are abandoning before it was ever used."""
+    kill = getattr(unwrap_sandbox_backend(sandbox_backend), "kill", None)
+    if kill is None:
+        return
+    try:
+        await asyncio.to_thread(kill)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to kill orphaned sandbox %s", sandbox_backend.id, exc_info=True)
+
+
+async def _renew_sandbox_ttl_if_supported(sandbox_backend: SandboxBackendProtocol) -> None:
+    """Slide the TTL window on providers with absolute TTLs (D6, opensandbox).
+
+    Best-effort: the ping already proved liveness, so a failed renew is logged
+    rather than treated as an unreachable sandbox.
+    """
+    renew = getattr(unwrap_sandbox_backend(sandbox_backend), "renew_ttl", None)
+    if renew is None:
+        return
+    try:
+        await asyncio.to_thread(renew)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to renew sandbox TTL for %s", sandbox_backend.id, exc_info=True)
 
 
 async def _configure_git_identity(sandbox_backend: SandboxBackendProtocol) -> None:
@@ -349,15 +447,25 @@ async def check_or_recreate_sandbox(
 ) -> SandboxBackendProtocol:
     """Check if a cached sandbox is reachable; recreate it if not.
 
-    Pings the sandbox with a lightweight command. If the sandbox is
-    unreachable (SandboxClientError), it is torn down and a fresh one
-    is created via _recreate_sandbox.
+    Pings the sandbox with a lightweight command. If the active provider's
+    recoverability predicate classifies the failure as a dead/unreachable
+    sandbox, it is torn down and a fresh one is created via _recreate_sandbox;
+    any other exception propagates (recreation is destructive and must never
+    be triggered by a non-sandbox bug).
 
     Returns the original backend if healthy, or a new one if recreated.
     """
     try:
         await asyncio.to_thread(sandbox_backend.execute, "echo ok")
-    except SandboxClientError:
+        await _renew_sandbox_ttl_if_supported(sandbox_backend)
+    except Exception as e:
+        try:
+            recoverable = get_recoverable_predicate()(e)
+        except Exception:  # noqa: BLE001
+            logger.exception("Recoverability predicate failed during ping check")
+            recoverable = False
+        if not recoverable:
+            raise
         logger.warning(
             "Cached sandbox is no longer reachable for thread %s, recreating",
             thread_id,
@@ -429,7 +537,7 @@ async def ensure_sandbox_for_thread(
 
     Implements the four-state lifecycle described in AGENTS.md:
 
-    1. Cached in memory → ping; recreate on ``SandboxClientError``.
+    1. Cached in memory → ping; recreate when the provider predicate says dead.
     2. Metadata says ``__creating__`` and no cache → wait for the creating
        worker; only reset if the sentinel is proven stale (timestamp/timeout).
     3. No sandbox at all → create one and persist the id.
@@ -481,7 +589,9 @@ async def ensure_sandbox_for_thread(
         created_replacement_sandbox = False
         try:
             sandbox_backend = await asyncio.to_thread(create_sandbox, sandbox_id)
-        except Exception:
+        except Exception as e:
+            if not _should_recreate_after_lifecycle_failure(e):
+                raise
             logger.warning("Failed to connect to existing sandbox %s, creating new one", sandbox_id)
             await client.threads.update(thread_id=thread_id, metadata=_creating_metadata())
             try:
