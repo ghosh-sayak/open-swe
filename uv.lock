@@ -711,24 +711,6 @@ wheels = [
 ]
 
 [[package]]
-name = "exa-py"
-version = "2.13.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpcore" },
-    { name = "httpx" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "requests" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f4/b3/cb701e7e5885a34d6f30af1b58498b52e9b82c29c0ea0cf711db459627c5/exa_py-2.13.0.tar.gz", hash = "sha256:423d20772af3c158ad62a41cb7cea427adeb6766c49f59862f9be6b2fd3b7d66", size = 62154, upload-time = "2026-05-13T19:12:12.032Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/10/eb8c09ea8ef43a324dc5f49066bffbe6bea744b4d8c1741311ac73ee9ecb/exa_py-2.13.0-py3-none-any.whl", hash = "sha256:a8e1fd192627a529501603bf43a384636c1e005f6194b85f72dd85fe8bcc138b", size = 85289, upload-time = "2026-05-13T19:12:10.36Z" },
-]
-
-[[package]]
 name = "fastapi"
 version = "0.136.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1571,7 +1553,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-api"
-version = "0.9.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cloudpickle" },
@@ -1607,9 +1589,9 @@ dependencies = [
     { name = "websockets" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/d4/f74c969fc71a090b60fbb8b9df4bb98307d5ca8d7f522c63242f962a3a01/langgraph_api-0.9.0.tar.gz", hash = "sha256:b4fc7df1f54d9b57d480971f34bd7a354897e68580c9ee78ecd6c538f70485cc", size = 703285, upload-time = "2026-05-27T13:13:26.687Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/24/243e295925121852f38f9ecd6ccd4ae464213d944776ebb24e845ee9796e/langgraph_api-0.10.1.tar.gz", hash = "sha256:820ea2e41ab5b933b843766f1f3882d23276b06b995ff47c1c067aa89980fed6", size = 713888, upload-time = "2026-07-06T22:18:22.309Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/cd/b83fa371964a616be5e536d1b7a4c8511485dc1b1e05a33ab9e719efd687/langgraph_api-0.9.0-py3-none-any.whl", hash = "sha256:a08489a9ae6fd4ba30ad1c1fccaeadba1a5370644f0a4183b4c52e8ccb5427ef", size = 567457, upload-time = "2026-05-27T13:13:25.198Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/6b/f010e3e79762f6d14684989006873698d0f4f60717bd01821f6c3d5e40b5/langgraph_api-0.10.1-py3-none-any.whl", hash = "sha256:5d4d73db7f64c2504bfee755d25fb1dbb486f8ab06b3accfc076dbb61211afe4", size = 577472, upload-time = "2026-07-06T22:18:20.917Z" },
 ]
 
 [[package]]
@@ -1627,7 +1609,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-cli"
-version = "0.4.27"
+version = "0.4.30"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -1636,9 +1618,9 @@ dependencies = [
     { name = "pathspec" },
     { name = "python-dotenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/02/21/046b2345d83427a59ebdac797fbe343bb8d1e575560667846f7346733774/langgraph_cli-0.4.27.tar.gz", hash = "sha256:67a64b67dddc8c670d77cc4c9663a7f8e924eaeb8857a926e87f239b699ef8f6", size = 1045499, upload-time = "2026-05-28T14:25:35.13Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f0/27/4b6a0f00c804f0b0831f741c0607b46a4cbddff14d1eab6bbd4ce5820837/langgraph_cli-0.4.30.tar.gz", hash = "sha256:4948fdc77ff45fc5ef3d8330d17bbecfcb26cd9c4d3a4f00da84a41a0226cd72", size = 1046771, upload-time = "2026-06-16T19:46:27.949Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/89/4bda72ff33172ad15ddb2c57c5b998bf9309e7c4890d3d84a8c8ed6333d4/langgraph_cli-0.4.27-py3-none-any.whl", hash = "sha256:d53bddfc4e7b6e47871bedb34ccc476fd5e4e97f8678dd453ecac597c5f11ff1", size = 78002, upload-time = "2026-05-28T14:25:34.127Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/b6/94cbd2ba0820caae203a915272394c576a21ab4a56dfbc93724dc8cd8e2b/langgraph_cli-0.4.30-py3-none-any.whl", hash = "sha256:9c577750c57da1a0e3407e8b83e5a0d7eaa80685fe99d95aa7f9bf0e1e73ca92", size = 82061, upload-time = "2026-06-16T19:46:26.873Z" },
 ]
 
 [package.optional-dependencies]
@@ -1662,7 +1644,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.29.0"
+version = "0.30.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
@@ -1673,9 +1655,9 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/47/fd47f2e99ff98ada4ee98a759c01f95144f2489e809c61794e7c6167c91c/langgraph_runtime_inmem-0.29.0.tar.gz", hash = "sha256:8bc5d240342af3e4054d9bd3b736b2f0edf6daf8421e6eaa919a29ecd582273a", size = 129621, upload-time = "2026-05-27T13:00:32.579Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8e/e2/e176dcba4bd10c441d99022cfe0f1bf38bf8ca3a1790752c289e9cec9f49/langgraph_runtime_inmem-0.30.1.tar.gz", hash = "sha256:42b4b638020e1fc331cbff7347a0383e0feca1bb999d63341dad42189826fbb5", size = 129961, upload-time = "2026-07-06T22:21:10.395Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/fa/c8d995c683ffd511b78514848445c04a9f1b370e2182be0c039a6232125e/langgraph_runtime_inmem-0.29.0-py3-none-any.whl", hash = "sha256:1b1b172734dca6065f576c4ce4297880ec004a5f54c0bfa84382c074d72d8cd5", size = 51509, upload-time = "2026-05-27T13:00:31.474Z" },
+    { url = "https://files.pythonhosted.org/packages/98/c7/2b29f3f0fb63a3e0695897bfc6df8b791d0879796092815624361df0d8f9/langgraph_runtime_inmem-0.30.1-py3-none-any.whl", hash = "sha256:2a3e9f7babd3fa1d46975e59b2d0514b33a6426e3a5d9265ada904387d9e100d", size = 51762, upload-time = "2026-07-06T22:21:09.481Z" },
 ]
 
 [[package]]
@@ -1996,7 +1978,6 @@ source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "deepagents" },
-    { name = "exa-py" },
     { name = "fastapi" },
     { name = "fireworks-ai" },
     { name = "httpx" },
@@ -2010,10 +1991,12 @@ dependencies = [
     { name = "langchain-openai" },
     { name = "langchain-runloop" },
     { name = "langgraph" },
+    { name = "langgraph-api" },
     { name = "langgraph-cli", extra = ["inmem"] },
     { name = "langgraph-sdk" },
     { name = "langsmith" },
     { name = "markdownify" },
+    { name = "opensandbox" },
     { name = "pyjwt" },
     { name = "uvicorn" },
 ]
@@ -2030,7 +2013,6 @@ dev = [
 requires-dist = [
     { name = "cryptography", specifier = ">=48.0.1" },
     { name = "deepagents", specifier = "==0.6.8" },
-    { name = "exa-py", specifier = ">=2.13.0" },
     { name = "fastapi", specifier = ">=0.136.3" },
     { name = "fireworks-ai", specifier = ">=1.2.0a71" },
     { name = "httpx", specifier = ">=0.28.1" },
@@ -2044,10 +2026,12 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=1.2.2" },
     { name = "langchain-runloop", specifier = ">=0.0.4" },
     { name = "langgraph", specifier = ">=1.1.10" },
+    { name = "langgraph-api", specifier = ">=0.10.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.27" },
     { name = "langgraph-sdk", specifier = ">=0.4.2" },
     { name = "langsmith", specifier = "==0.9.3" },
     { name = "markdownify", specifier = ">=1.2.2" },
+    { name = "opensandbox", specifier = ">=0.1.13,<0.2" },
     { name = "pygments", marker = "extra == 'dev'", specifier = ">=2.20.0" },
     { name = "pyjwt", specifier = ">=2.12.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
@@ -2074,6 +2058,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f0/ee/d056c82f63c05f06baac0cffb4a90952d8274f90c49dfe244f20497b9bbd/openai-2.33.0.tar.gz", hash = "sha256:f850c435e2a4685bba3295bd54912dd26315d9c1b7733068186134d6e0599f9a", size = 693254, upload-time = "2026-04-28T14:04:42.428Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/32/37734d769bc8b42e4938785313cc05aade6cb0fa72479d3220a0d61a4e78/openai-2.33.0-py3-none-any.whl", hash = "sha256:03ac37d70e8c9e3a8124214e3afa785e2cbc12e627fbd98177a086ef2fd87ad5", size = 1162695, upload-time = "2026-04-28T14:04:40.482Z" },
+]
+
+[[package]]
+name = "opensandbox"
+version = "0.1.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "attrs" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3e/e2/d2716adfca0cce6af3913035372d2f8cbe6a836e595d4747e19481113439/opensandbox-0.1.13.tar.gz", hash = "sha256:eab4b6597b2941f0418fa186a377c15b01acb8549f24f84963e7c15434232977", size = 201287, upload-time = "2026-06-25T06:52:57.384Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/57/74459959e69e4271929ab3658c5abcbbf977977d126ddd7d861bfde4d0e5/opensandbox-0.1.13-py3-none-any.whl", hash = "sha256:8decd1eb952a3b539fecaf443b025c24d6d4a535f62242abd11644bc20505570", size = 491625, upload-time = "2026-06-25T06:52:55.726Z" },
 ]
 
 [[package]]

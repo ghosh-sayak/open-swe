@@ -29,6 +29,7 @@ dependencies = [
     "langchain-google-genai>=4.2.4",
     "langchain-mcp-adapters>=0.2.2",
     "langgraph-api>=0.10.0",
+    "opensandbox>=0.1.13,<0.2",
 ]
 
 [project.optional-dependencies]
