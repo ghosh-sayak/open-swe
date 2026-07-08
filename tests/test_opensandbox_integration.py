@@ -389,6 +389,15 @@ def test_download_partial_success_maps_not_found(osb):
     assert responses[1].error == FILE_NOT_FOUND
 
 
+def test_renew_ttl_renews_with_configured_ttl(osb, monkeypatch):
+    backend = osb.create_opensandbox_sandbox(None)
+    monkeypatch.setenv("OPEN_SANDBOX_TTL_SECONDS", "900")
+
+    backend.renew_ttl()
+
+    assert backend._sandbox.renew_calls == [timedelta(seconds=900)]
+
+
 # --------------------------------------------------------------------------- #
 # id / kill / close                                                           #
 # --------------------------------------------------------------------------- #

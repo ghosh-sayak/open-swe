@@ -145,6 +145,10 @@ class OpensandboxBackend(BaseSandbox):
                 )
         return responses
 
+    def renew_ttl(self) -> None:
+        """Slide the absolute TTL window (D6); called on every reconnect/ping."""
+        self._sandbox.renew(_ttl())
+
     def kill(self) -> None:
         self._sandbox.kill()
 

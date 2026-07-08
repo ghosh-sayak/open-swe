@@ -109,6 +109,7 @@ from .utils.model import (
     provider_model_kwargs,
 )
 from .utils.sandbox import create_sandbox
+from .utils.sandbox_github_auth import configure_github_auth
 from .utils.sandbox_paths import aresolve_sandbox_work_dir
 from .utils.tracing import AGENT_TRACING_PROJECT, traced_graph_factory
 
@@ -237,6 +238,20 @@ async def _create_sandbox_with_proxy(
             permissions=None if github_proxy_token else RUNTIME_PROXY_TOKEN_PERMISSIONS,
         )
 
+    elif sandbox_type == "opensandbox":
+        token, _expires_at = await _resolve_proxy_token(github_proxy_token)
+        if not token:
+            msg = "Cannot configure git auth: GitHub App installation token is unavailable"
+            logger.error(msg)
+            raise ValueError(msg)
+        # No GitHub proxy on this provider: write hosts.yml + insteadOf into the
+        # sandbox over exec. The image's gh wrapper strips the prompts' dummy
+        # GH_TOKEN so gh falls back to these credentials.
+        await asyncio.to_thread(configure_github_auth, sandbox_backend, token)
+        logger.info(
+            "Configured git and gh credentials in OpenSandbox sandbox %s", sandbox_backend.id
+        )
+
     return sandbox_backend
 
 
@@ -247,8 +262,25 @@ async def _refresh_github_proxy(
     thread_id: str | None = None,
     github_proxy_repositories: Sequence[str] | None = None,
 ) -> None:
-    """Refresh GitHub proxy credentials for reused LangSmith sandboxes."""
-    if os.getenv("SANDBOX_TYPE", "langsmith") != "langsmith":
+    """Refresh GitHub credentials for reused sandboxes (proxy or hosts.yml)."""
+    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
+
+    if sandbox_type == "opensandbox":
+        token, _expires_at = await _resolve_proxy_token(github_proxy_token)
+        if not token:
+            logger.warning(
+                "Skipping GitHub auth refresh for sandbox %s: installation token unavailable",
+                sandbox_backend.id,
+            )
+            return
+        current_backend = unwrap_sandbox_backend(sandbox_backend)
+        await asyncio.to_thread(configure_github_auth, current_backend, token)
+        logger.info(
+            "Refreshed git and gh credentials in OpenSandbox sandbox %s", current_backend.id
+        )
+        return
+
+    if sandbox_type != "langsmith":
         return
 
     token, expires_at = await _resolve_proxy_token(github_proxy_token)
@@ -299,6 +331,21 @@ async def _refresh_github_proxy_or_recreate(
             repo=repo,
         )
     return sandbox_backend
+
+
+async def _renew_sandbox_ttl_if_supported(sandbox_backend: SandboxBackendProtocol) -> None:
+    """Slide the TTL window on providers with absolute TTLs (D6, opensandbox).
+
+    Best-effort: the ping already proved liveness, so a failed renew is logged
+    rather than treated as an unreachable sandbox.
+    """
+    renew = getattr(unwrap_sandbox_backend(sandbox_backend), "renew_ttl", None)
+    if renew is None:
+        return
+    try:
+        await asyncio.to_thread(renew)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to renew sandbox TTL for %s", sandbox_backend.id, exc_info=True)
 
 
 async def _configure_git_identity(sandbox_backend: SandboxBackendProtocol) -> None:
@@ -357,6 +404,7 @@ async def check_or_recreate_sandbox(
     """
     try:
         await asyncio.to_thread(sandbox_backend.execute, "echo ok")
+        await _renew_sandbox_ttl_if_supported(sandbox_backend)
     except SandboxClientError:
         logger.warning(
             "Cached sandbox is no longer reachable for thread %s, recreating",
