@@ -277,6 +277,12 @@ return create_deep_agent(tools=tools, ...)
 
 ## 4. Triggers
 
+> **Note (this fork):** Slack and Linear have been **retired** — the agent is invoked only via
+> **GitHub** (PR comments / auto-review) and the **dashboard** (Agents chat thread API). The Slack
+> and Linear code was quarantined under `bak/` (see `bak/README.md`); their env vars
+> (`SLACK_*`, `LINEAR_WEBHOOK_SECRET`, `LINEAR_API_KEY`) are no longer read. The subsections below
+> describe the original upstream trigger surface for reference.
+
 Open SWE supports three invocation surfaces: Linear, Slack, and GitHub. Each is implemented as a webhook endpoint in `agent/webapp.py`. You can add, remove, or modify triggers independently.
 
 ### Removing a trigger

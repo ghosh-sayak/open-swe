@@ -20,8 +20,6 @@ from typing import Any
 
 from .utils.github_app import get_github_app_installation_token
 from .utils.github_comments import post_github_comment
-from .utils.linear import comment_on_linear_issue
-from .utils.slack import post_slack_thread_reply
 from .utils.thread_ops import langgraph_client
 
 logger = logging.getLogger(__name__)
@@ -76,23 +74,6 @@ async def _post_failure_reply(thread_id: str, metadata: dict[str, Any], status: 
     ctx = metadata.get("source_context")
     ctx = ctx if isinstance(ctx, dict) else {}
     text = _failure_text(status)
-
-    if source == "slack":
-        slack_thread = ctx.get("slack_thread")
-        if isinstance(slack_thread, dict):
-            channel_id = slack_thread.get("channel_id")
-            thread_ts = slack_thread.get("thread_ts")
-            if channel_id and thread_ts:
-                return await post_slack_thread_reply(channel_id, thread_ts, text)
-        return False
-
-    if source == "linear":
-        linear_issue = ctx.get("linear_issue")
-        if isinstance(linear_issue, dict):
-            issue_id = linear_issue.get("id")
-            if issue_id:
-                return await comment_on_linear_issue(issue_id, text)
-        return False
 
     if source in ("github", "github_issue"):
         repo_config = metadata.get("repo")

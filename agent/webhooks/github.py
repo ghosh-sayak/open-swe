@@ -9,9 +9,9 @@ from typing import Any
 
 from agent import webapp
 
-from ..reviewer_findings import FindingInteraction, ReviewerPRMeta, ReviewerSlackThread
+from ..reviewer_findings import FindingInteraction, ReviewerPRMeta
 from ..utils.github_comments import GitHubAuthError
-from ..utils.slack import GitHubPrRef
+from ..utils.github_pr import GitHubPrRef
 
 
 def build_github_issue_prompt(
@@ -88,8 +88,6 @@ async def trigger_pr_review_from_ref(
     source: str,
     github_login: str = "",
     github_user_id: int | None = None,
-    slack_channel_id: str = "",
-    slack_thread_ts: str = "",
 ) -> dict[str, Any]:
     repo_config = {"owner": pr_ref.owner, "name": pr_ref.repo}
     if not await webapp._is_repo_enabled_for_review(repo_config):
@@ -125,7 +123,7 @@ async def trigger_pr_review_from_ref(
     pr_title = pr_metadata.get("title", "")
     pr_url = pr_metadata.get("html_url", "") or pr_ref.url
     if not base_sha or not head_sha:
-        webapp.logger.warning("Missing base/head SHA for Slack PR review request")
+        webapp.logger.warning("Missing base/head SHA for PR review request")
         return {"success": False, "error": "Pull request metadata is missing base/head SHA"}
 
     thread_id = webapp.generate_reviewer_thread_id(pr_ref.owner, pr_ref.repo, pr_ref.number)
@@ -143,15 +141,7 @@ async def trigger_pr_review_from_ref(
         "base_ref": base_ref,
         "author": (pr_metadata.get("user") or {}).get("login", ""),
     }
-    slack_thread_meta: ReviewerSlackThread | None = None
-    if slack_channel_id and slack_thread_ts:
-        slack_thread_meta = {
-            "channel_id": slack_channel_id,
-            "thread_ts": slack_thread_ts,
-        }
-    await webapp.set_reviewer_thread_metadata(
-        thread_id, pr=pr_meta, watch=True, slack_thread=slack_thread_meta, head_sha=head_sha
-    )
+    await webapp.set_reviewer_thread_metadata(thread_id, pr=pr_meta, watch=True, head_sha=head_sha)
     await webapp.post_review_started_comment(
         thread_id=thread_id,
         owner=pr_ref.owner,
@@ -172,8 +162,6 @@ async def trigger_pr_review_from_ref(
         head_sha=head_sha,
         branch_name=branch_name,
         repo_private=repo_private,
-        slack_channel_id=slack_channel_id,
-        slack_thread_ts=slack_thread_ts,
     )
 
     webapp.logger.info(
@@ -482,8 +470,8 @@ async def process_github_push_event(payload: dict[str, Any]) -> None:
     if metadata is None or metadata.get("kind") != webapp.REVIEWER_THREAD_KIND:
         webapp.logger.info(
             "Push to %s/%s#%s ignored: no reviewer thread for this PR. "
-            "Trigger a first review (Slack `@open-swe review <url>` or request "
-            "open-swe[bot] as a GitHub reviewer) to start watching.",
+            "Trigger a first review (request open-swe[bot] as a GitHub reviewer "
+            "or @open-swe review <url> on the PR) to start watching.",
             repo_config["owner"],
             repo_config["name"],
             pr_number,

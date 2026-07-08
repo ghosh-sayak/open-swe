@@ -47,12 +47,10 @@ async def test_upsert_and_bidirectional_lookup(fake_store: _FakeStore) -> None:
     await um.upsert_mapping(
         github_login="Octocat",
         work_email="OCTO@example.com",
-        slack_user_id="U123",
     )
     # Login lookups are case-insensitive; email is normalized to lowercase.
     assert await um.email_for_login("octocat") == "octo@example.com"
     assert await um.login_for_email("octo@example.com") == "Octocat"
-    assert await um.login_for_slack_id("U123") == "Octocat"
 
 
 @pytest.mark.asyncio
@@ -100,24 +98,14 @@ async def test_resolve_login_from_email_async_cold_cache(
 
 
 @pytest.mark.asyncio
-async def test_update_deindexes_stale_email_and_slack_id(fake_store: _FakeStore) -> None:
-    # An update that changes the email/slack id must not leave the old aliases
-    # resolving to this login in the in-process cache.
-    await um.upsert_mapping(
-        github_login="mover",
-        work_email="old@x.com",
-        slack_user_id="UOLD",
-    )
-    await um.upsert_mapping(
-        github_login="mover",
-        work_email="new@x.com",
-        slack_user_id="UNEW",
-    )
+async def test_update_deindexes_stale_email(fake_store: _FakeStore) -> None:
+    # An update that changes the email must not leave the old alias resolving to
+    # this login in the in-process cache.
+    await um.upsert_mapping(github_login="mover", work_email="old@x.com")
+    await um.upsert_mapping(github_login="mover", work_email="new@x.com")
 
     assert um.cached_login_for_email("old@x.com") is None
-    assert um.cached_login_for_slack_id("UOLD") is None
     assert um.cached_login_for_email("new@x.com") == "mover"
-    assert um.cached_login_for_slack_id("UNEW") == "mover"
 
 
 @pytest.mark.asyncio

@@ -93,7 +93,7 @@ async def test_check_message_queue_injects_pending_autofix_event() -> None:
 async def test_build_blocks_skips_images_for_text_only_model() -> None:
     payload = {
         "text": "see this screenshot",
-        "image_urls": ["https://files.slack.com/fake.png"],
+        "image_urls": ["https://example.com/fake.png"],
     }
     blocks = await _build_blocks_from_payload(
         payload, model_id="fireworks:accounts/fireworks/models/glm-5p2"

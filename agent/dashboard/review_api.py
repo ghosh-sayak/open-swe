@@ -696,7 +696,7 @@ async def proxy_pr_image(owner: str, repo: str, pr_number: int, url: str) -> Res
 
 
 async def trigger_re_review(owner: str, repo: str, pr_number: int, login: str) -> dict[str, Any]:
-    from ..utils.slack import GitHubPrRef
+    from ..utils.github_pr import GitHubPrRef
     from ..webapp import trigger_pr_review_from_ref
 
     pr_ref = GitHubPrRef(
@@ -717,7 +717,7 @@ async def dry_run_trace_resolution(owner: str, repo: str, pr_number: int) -> dic
 
     from ..reviewer_trace_context import resolve_pr_trace
     from ..utils.github_app import get_github_app_installation_token_with_expiry
-    from ..utils.slack import GitHubPrRef
+    from ..utils.github_pr import GitHubPrRef
     from ..webapp import fetch_github_pr_metadata
 
     pr_ref = GitHubPrRef(

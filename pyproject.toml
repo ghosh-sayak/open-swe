@@ -53,6 +53,8 @@ packages = ["agent"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# bak/ is a tracked, tooling-excluded quarantine for retired code (see bak/README.md).
+extend-exclude = ["bak"]
 
 [tool.ruff.lint]
 select = [

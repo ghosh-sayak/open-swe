@@ -57,18 +57,15 @@ async def _run_email(login: str, profile: dict[str, Any]) -> str:
 
 
 @pytest.mark.asyncio
-async def test_dashboard_followup_on_slack_thread_uses_dashboard_source(
+async def test_dashboard_followup_on_github_thread_uses_dashboard_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     metadata = {
-        "source": "slack",
+        "source": "github",
         "github_login": "octocat",
         "triggering_user_email": "octocat@example.com",
         "repo_owner": "octo",
         "repo_name": "repo",
-        "source_context": {
-            "slack_thread": {"channel_id": "C1", "thread_ts": "123.45"},
-        },
     }
     client = _FakeClient(metadata)
 
@@ -136,7 +133,7 @@ async def test_dashboard_followup_on_busy_thread_queues_dashboard_handoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     metadata = {
-        "source": "slack",
+        "source": "github",
         "github_login": "octocat",
         "triggering_user_email": "octocat@example.com",
     }

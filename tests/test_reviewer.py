@@ -180,7 +180,7 @@ async def test_reviewer_resolves_app_installation_token_at_run_start() -> None:
             "__is_for_execution__": True,
             "thread_id": "reviewer-thread-id",
             "repo": {"owner": "acme", "name": "repo"},
-            "source": "slack",
+            "source": "github",
             "review_requested": True,
         },
         "metadata": {},

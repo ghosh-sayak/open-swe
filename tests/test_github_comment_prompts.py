@@ -62,7 +62,7 @@ def test_construct_system_prompt_explains_pause_to_ask_for_dependency_review() -
     prompt = construct_system_prompt(working_dir="/workspace")
 
     assert "You can stop to ask" in prompt
-    assert "post a question or note in the source Slack thread" in prompt
+    assert "post a question or note in the source GitHub thread or the PR description" in prompt
     assert "end your turn without making a tool call" in prompt
     assert "the user can reply and the run will resume" in prompt
     assert "You cannot pause to ask for approval mid-task" not in prompt
@@ -271,23 +271,22 @@ def test_add_pr_collaboration_note_skips_when_footer_present_with_other_link() -
     )
 
 
-def test_resolve_triggering_user_identity_combines_slack_name_with_github_login() -> None:
+def test_resolve_triggering_user_identity_from_github_login() -> None:
     identity = resolve_triggering_user_identity(
         {
             "configurable": {
                 "github_login": "mdrxy",
                 "github_user_id": 1234,
-                "slack_thread": {"triggering_user_name": "Mason Daugherty"},
             }
         }
     )
 
     assert identity is not None
-    assert identity.display_name == "Mason Daugherty"
-    assert identity.commit_name == "Mason Daugherty"
+    assert identity.display_name == "mdrxy"
+    assert identity.commit_name == "mdrxy"
     assert identity.commit_email == "1234+mdrxy@users.noreply.github.com"
     assert identity.github_login == "mdrxy"
-    assert identity.pr_attribution_name == "Mason Daugherty (@mdrxy)"
+    assert identity.pr_attribution_name == "mdrxy"
 
 
 def test_build_pr_prompt_sanitizes_reserved_tags_from_comment_body() -> None:

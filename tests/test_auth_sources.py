@@ -7,46 +7,9 @@ import pytest
 from agent.utils import auth
 
 
-def test_leave_failure_comment_posts_generic_token_free_slack_notice(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Slack auth failures post a generic notice, never the (possibly sensitive) message."""
-    monkeypatch.setenv("DASHBOARD_BASE_URL", "https://app.example.com")
-    thread_called: dict[str, str] = {}
-
-    async def fake_post_slack_thread_reply(channel_id: str, thread_ts: str, message: str) -> bool:
-        thread_called["channel_id"] = channel_id
-        thread_called["thread_ts"] = thread_ts
-        thread_called["message"] = message
-        return True
-
-    monkeypatch.setattr(auth, "post_slack_thread_reply", fake_post_slack_thread_reply)
-    monkeypatch.setattr(
-        auth,
-        "get_config",
-        lambda: {
-            "configurable": {
-                "slack_thread": {
-                    "channel_id": "C123",
-                    "thread_ts": "1.2",
-                    "triggering_user_id": "U123",
-                }
-            }
-        },
-    )
-
-    # Pass a message that embeds a per-user auth URL; it must NOT be echoed publicly.
-    asyncio.run(auth.leave_failure_comment("slack", "Click https://auth.example/secret-token"))
-
-    assert thread_called["channel_id"] == "C123"
-    assert thread_called["thread_ts"] == "1.2"
-    assert "secret-token" not in thread_called["message"]
-    assert "https://app.example.com/my-settings" in thread_called["message"]
-
-
-def _slack_config(github_login: str | None = "mason-gh") -> dict:
+def _dashboard_config(github_login: str | None = "mason-gh") -> dict:
     configurable: dict = {
-        "source": "slack",
+        "source": "dashboard",
         "user_email": "mason@example.com",
         "thread_id": "t1",
     }
@@ -78,22 +41,22 @@ def _stub_dashboard_store(
     monkeypatch.setattr(profiles, "_get_value", fake_get_value)
 
 
-def test_resolve_github_token_slack_uses_dashboard_store(
+def test_resolve_github_token_dashboard_uses_dashboard_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_dashboard_store(monkeypatch, token="user-tok")
     monkeypatch.setattr(auth, "is_bot_token_only_mode", lambda: False)
 
-    token, expires_at = asyncio.run(auth.resolve_github_token(_slack_config(), "t1"))
+    token, expires_at = asyncio.run(auth.resolve_github_token(_dashboard_config(), "t1"))
 
     assert token == "user-tok"
     assert expires_at == "2099-01-01T00:00:00Z"
 
 
-def test_resolve_github_token_slack_ignores_stale_thread_cache(
+def test_resolve_github_token_dashboard_ignores_stale_thread_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Slack thread ids are shared, so a prior user's cached token must NOT be
+    # Thread ids can be shared, so a prior user's cached token must NOT be
     # returned. Resolution always goes by github_login via the dashboard store.
     _stub_dashboard_store(
         monkeypatch,
@@ -102,19 +65,19 @@ def test_resolve_github_token_slack_ignores_stale_thread_cache(
     )
     monkeypatch.setattr(auth, "is_bot_token_only_mode", lambda: False)
 
-    token, _ = asyncio.run(auth.resolve_github_token(_slack_config(), "t1"))
+    token, _ = asyncio.run(auth.resolve_github_token(_dashboard_config(), "t1"))
 
     assert token == "bob-token"
 
 
-def test_resolve_github_token_slack_no_token_raises(
+def test_resolve_github_token_dashboard_no_token_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_dashboard_store(monkeypatch, token=None)
     monkeypatch.setattr(auth, "is_bot_token_only_mode", lambda: False)
 
     with pytest.raises(auth.GitHubUserAuthRequired):
-        asyncio.run(auth.resolve_github_token(_slack_config(), "t1"))
+        asyncio.run(auth.resolve_github_token(_dashboard_config(), "t1"))
 
 
 def test_resolve_github_token_per_user_wins_over_bot_only_mode(
@@ -128,11 +91,11 @@ def test_resolve_github_token_per_user_wins_over_bot_only_mode(
 
     monkeypatch.setattr(auth, "_resolve_bot_installation_token", fail_bot)
 
-    token, _ = asyncio.run(auth.resolve_github_token(_slack_config(), "t1"))
+    token, _ = asyncio.run(auth.resolve_github_token(_dashboard_config(), "t1"))
     assert token == "user-tok"
 
 
-def test_resolve_github_token_slack_no_token_falls_back_to_bot_in_bot_only_mode(
+def test_resolve_github_token_dashboard_no_token_falls_back_to_bot_in_bot_only_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_dashboard_store(monkeypatch, token=None)
@@ -143,12 +106,12 @@ def test_resolve_github_token_slack_no_token_falls_back_to_bot_in_bot_only_mode(
 
     monkeypatch.setattr(auth, "_resolve_bot_installation_token", fake_bot)
 
-    token, expires_at = asyncio.run(auth.resolve_github_token(_slack_config(), "t1"))
+    token, expires_at = asyncio.run(auth.resolve_github_token(_dashboard_config(), "t1"))
     assert (token, expires_at) == ("bot-tok", None)
 
 
-@pytest.mark.parametrize("source", ["github", "linear"])
-def test_resolve_github_token_bot_only_mode_non_slack_uses_bot(
+@pytest.mark.parametrize("source", ["github", "github_push"])
+def test_resolve_github_token_bot_only_mode_github_uses_bot(
     monkeypatch: pytest.MonkeyPatch, source: str
 ) -> None:
     monkeypatch.setattr(auth, "is_bot_token_only_mode", lambda: True)

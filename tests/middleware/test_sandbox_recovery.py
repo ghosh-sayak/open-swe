@@ -186,8 +186,6 @@ async def test_circuit_breaker_posts_one_user_notification() -> None:
     }
     config = {
         "configurable": {
-            "slack_thread": {"channel_id": "C123", "thread_ts": "171.123"},
-            "linear_issue": {"id": "lin-1"},
             "repo": {"owner": "langchain-ai", "name": "open-swe"},
             "pr_number": 7,
         }
@@ -196,21 +194,11 @@ async def test_circuit_breaker_posts_one_user_notification() -> None:
     with (
         patch("agent.middleware.sandbox_circuit_breaker.get_config", return_value=config),
         patch(
-            "agent.middleware.sandbox_circuit_breaker.post_slack_thread_reply",
+            "agent.middleware.sandbox_circuit_breaker.post_source_notification",
             new_callable=AsyncMock,
-        ) as mock_slack,
-        patch(
-            "agent.middleware.sandbox_circuit_breaker.comment_on_linear_issue",
-            new_callable=AsyncMock,
-        ) as mock_linear,
-        patch(
-            "agent.middleware.sandbox_circuit_breaker.post_github_comment",
-            new_callable=AsyncMock,
-        ) as mock_github,
+        ) as mock_notify,
     ):
         result = await middleware.aafter_agent(state, MagicMock())
 
     assert result is None
-    mock_slack.assert_awaited_once_with("C123", "171.123", SANDBOX_UNRECOVERABLE_MESSAGE)
-    mock_linear.assert_not_called()
-    mock_github.assert_not_called()
+    mock_notify.assert_awaited_once_with(config, SANDBOX_UNRECOVERABLE_MESSAGE)

@@ -86,7 +86,7 @@ async def test_get_dashboard_thread_marks_finished_thread_viewed(monkeypatch) ->
 async def test_get_dashboard_thread_readable_by_non_owner(monkeypatch) -> None:
     client = FakeClient(
         {
-            "source": "slack",
+            "source": "github",
             "github_login": "octocat",
             "latest_run_id": "run-1",
             "latest_run_status": "success",

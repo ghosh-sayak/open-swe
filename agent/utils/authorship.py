@@ -100,14 +100,8 @@ def _identity_from_github_token(github_token: str | None) -> CollaboratorIdentit
 
 def _identity_from_config(config: dict[str, Any]) -> CollaboratorIdentity | None:
     configurable = config.get("configurable", {})
-    slack_thread = configurable.get("slack_thread", {})
-    linear_issue = configurable.get("linear_issue", {})
 
-    display_name = (
-        _normalize_text(slack_thread.get("triggering_user_name"))
-        or _normalize_text(linear_issue.get("triggering_user_name"))
-        or _normalize_text(configurable.get("user_email")).split("@", 1)[0]
-    )
+    display_name = _normalize_text(configurable.get("user_email")).split("@", 1)[0]
 
     github_login = _normalize_text(configurable.get("github_login"))
     if github_login:
@@ -125,9 +119,7 @@ def _identity_from_config(config: dict[str, Any]) -> CollaboratorIdentity | None
                 commit_email=commit_email,
                 github_login=github_login,
             )
-    commit_email = _normalize_text(configurable.get("user_email")) or _normalize_text(
-        slack_thread.get("triggering_user_email")
-    )
+    commit_email = _normalize_text(configurable.get("user_email"))
     if display_name and commit_email:
         return CollaboratorIdentity(
             display_name=display_name,
@@ -144,8 +136,7 @@ def resolve_triggering_user_identity(
     """Resolve the triggering user's git identity.
 
     Prefer the GitHub account identity derived from the token when available.
-    Fall back to config metadata when the run originated from GitHub or when
-    Slack/Linear supplied an explicit user name and email.
+    Fall back to config metadata (github_login / user_email) otherwise.
     """
 
     return _identity_from_github_token(github_token) or _identity_from_config(config)
