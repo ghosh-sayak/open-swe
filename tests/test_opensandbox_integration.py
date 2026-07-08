@@ -1,0 +1,495 @@
+"""Unit tests for the OpenSandbox backend + factory + predicate (plan §11).
+
+sys.modules-fake style, no network: the opensandbox SDK is faked and the
+integration module is loaded in isolation, mirroring test_daytona_integration.py.
+"""
+
+import importlib.util
+import sys
+import types
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+# --------------------------------------------------------------------------- #
+# Fakes for the opensandbox SDK                                               #
+# --------------------------------------------------------------------------- #
+class _FakeConnectionConfigSync:
+    def __init__(self, *, domain=None, api_key=None, use_server_proxy=False, **kwargs):
+        self.domain = domain
+        self.api_key = api_key
+        self.use_server_proxy = use_server_proxy
+        self.kwargs = kwargs
+
+
+class _FakeRunCommandOpts:
+    def __init__(
+        self, *, timeout=None, background=False, working_directory=None, envs=None, **kwargs
+    ):
+        self.timeout = timeout
+        self.background = background
+        self.working_directory = working_directory
+        self.envs = envs
+
+
+class _FakeWriteEntry:
+    def __init__(self, *, path, data=None, mode=755):
+        self.path = path
+        self.data = data
+        self.mode = mode
+
+
+class _FakeOutputMessage:
+    def __init__(self, text, is_error=False):
+        self.text = text
+        self.is_error = is_error
+
+
+class _FakeExecutionLogs:
+    def __init__(self, stdout=None, stderr=None):
+        self.stdout = [_FakeOutputMessage(t) for t in (stdout or [])]
+        self.stderr = [_FakeOutputMessage(t, is_error=True) for t in (stderr or [])]
+
+
+class _FakeExecution:
+    def __init__(self, exit_code=0, stdout=None, stderr=None):
+        self.exit_code = exit_code
+        self.logs = _FakeExecutionLogs(stdout=stdout, stderr=stderr)
+
+
+class _FakeCommands:
+    def __init__(self, sandbox):
+        self._sandbox = sandbox
+
+    def run(self, command, *, opts=None, handlers=None):
+        self._sandbox.run_calls.append((command, opts))
+        return self._sandbox.next_execution
+
+
+class _FakeFilesystem:
+    def __init__(self, sandbox):
+        self._sandbox = sandbox
+
+    def create_directories(self, entries):
+        if self._sandbox.mkdir_error is not None:
+            raise self._sandbox.mkdir_error
+        self._sandbox.created_dirs.extend(e.path for e in entries)
+
+    def write_file(self, path, data):
+        err = self._sandbox.write_errors.get(path)
+        if err is not None:
+            raise err
+        self._sandbox.written[path] = data
+
+    def read_bytes(self, path):
+        err = self._sandbox.read_errors.get(path)
+        if err is not None:
+            raise err
+        return self._sandbox.files_content[path]
+
+
+class _FakeSandboxSync:
+    def __init__(self, sandbox_id):
+        self._id = sandbox_id
+        self.commands = _FakeCommands(self)
+        self.files = _FakeFilesystem(self)
+        self.run_calls = []
+        self.renew_calls = []
+        self.killed = False
+        self.closed = False
+        self.origin = None
+        self.create_kwargs = None
+        self.connect_kwargs = None
+        self.next_execution = _FakeExecution(0, stdout=["ok"])
+        self.created_dirs = []
+        self.written = {}
+        self.files_content = {}
+        self.write_errors = {}
+        self.read_errors = {}
+        self.mkdir_error = None
+
+    @property
+    def id(self):
+        return self._id
+
+    @classmethod
+    def create(cls, image=None, **kwargs):
+        inst = cls(sandbox_id="uuid-created")
+        inst.origin = "create"
+        inst.create_kwargs = {"image": image, **kwargs}
+        return inst
+
+    @classmethod
+    def connect(cls, sandbox_id, **kwargs):
+        inst = cls(sandbox_id=sandbox_id)
+        inst.origin = "connect"
+        inst.connect_kwargs = {"sandbox_id": sandbox_id, **kwargs}
+        return inst
+
+    def renew(self, timeout):
+        self.renew_calls.append(timeout)
+
+    def kill(self):
+        self.killed = True
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeSandboxException(Exception):
+    pass
+
+
+class _FakeSandboxApiException(_FakeSandboxException):
+    def __init__(self, message="", status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _FakeSandboxInternalException(_FakeSandboxException):
+    pass
+
+
+def _install_opensandbox_fakes(monkeypatch):
+    """Register a fake opensandbox package tree in sys.modules."""
+    modules = {
+        "opensandbox": types.ModuleType("opensandbox"),
+        "opensandbox.sync": types.ModuleType("opensandbox.sync"),
+        "opensandbox.models": types.ModuleType("opensandbox.models"),
+        "opensandbox.models.execd": types.ModuleType("opensandbox.models.execd"),
+        "opensandbox.models.filesystem": types.ModuleType("opensandbox.models.filesystem"),
+        "opensandbox.config": types.ModuleType("opensandbox.config"),
+        "opensandbox.config.connection_sync": types.ModuleType(
+            "opensandbox.config.connection_sync"
+        ),
+        "opensandbox.exceptions": types.ModuleType("opensandbox.exceptions"),
+    }
+    modules["opensandbox.sync"].SandboxSync = _FakeSandboxSync
+    modules["opensandbox.models.execd"].RunCommandOpts = _FakeRunCommandOpts
+    modules["opensandbox.models.filesystem"].WriteEntry = _FakeWriteEntry
+    modules["opensandbox.config.connection_sync"].ConnectionConfigSync = _FakeConnectionConfigSync
+    modules["opensandbox.exceptions"].SandboxException = _FakeSandboxException
+    modules["opensandbox.exceptions"].SandboxApiException = _FakeSandboxApiException
+    modules["opensandbox.exceptions"].SandboxInternalException = _FakeSandboxInternalException
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def _load_opensandbox_module(monkeypatch):
+    _install_opensandbox_fakes(monkeypatch)
+    module_path = ROOT / "agent" / "integrations" / "opensandbox.py"
+    spec = importlib.util.spec_from_file_location("opensandbox_under_test", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def osb(monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_API_KEY", "test-key")
+    monkeypatch.setenv("OPEN_SANDBOX_DOMAIN", "localhost:8090")
+    monkeypatch.delenv("OPEN_SANDBOX_TTL_SECONDS", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_COMMAND_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_USE_SERVER_PROXY", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_IMAGE", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_CPU", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_MEMORY", raising=False)
+    return _load_opensandbox_module(monkeypatch)
+
+
+# --------------------------------------------------------------------------- #
+# Factory: env fail-fast + create/connect dispatch + renew                    #
+# --------------------------------------------------------------------------- #
+def test_factory_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPEN_SANDBOX_API_KEY", raising=False)
+    module = _load_opensandbox_module(monkeypatch)
+
+    with pytest.raises(ValueError, match="OPEN_SANDBOX_API_KEY"):
+        module.create_opensandbox_sandbox(None)
+
+
+def test_cold_start_calls_create_with_defaults(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+
+    sandbox = backend._sandbox
+    assert sandbox.origin == "create"
+    assert sandbox.create_kwargs["image"] == "open-swe-sandbox:latest"
+    assert sandbox.create_kwargs["timeout"] == timedelta(seconds=7200)
+    assert sandbox.create_kwargs["resource"] == {"cpu": "2", "memory": "4Gi"}
+    conn = sandbox.create_kwargs["connection_config"]
+    assert conn.domain == "localhost:8090"
+    assert conn.api_key == "test-key"
+    assert conn.use_server_proxy is False
+    assert sandbox.renew_calls == []
+
+
+def test_cold_start_honors_env_overrides(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_IMAGE", "custom-image:1.2")
+    monkeypatch.setenv("OPEN_SANDBOX_CPU", "4")
+    monkeypatch.setenv("OPEN_SANDBOX_MEMORY", "8Gi")
+    monkeypatch.setenv("OPEN_SANDBOX_USE_SERVER_PROXY", "true")
+
+    backend = osb.create_opensandbox_sandbox(None)
+
+    kwargs = backend._sandbox.create_kwargs
+    assert kwargs["image"] == "custom-image:1.2"
+    assert kwargs["resource"] == {"cpu": "4", "memory": "8Gi"}
+    assert kwargs["connection_config"].use_server_proxy is True
+
+
+def test_reconnect_calls_connect_and_renews(osb):
+    backend = osb.create_opensandbox_sandbox("abc-123-uuid")
+
+    sandbox = backend._sandbox
+    assert sandbox.origin == "connect"
+    assert sandbox.connect_kwargs["sandbox_id"] == "abc-123-uuid"
+    assert backend.id == "abc-123-uuid"
+    assert sandbox.renew_calls == [timedelta(seconds=7200)]
+
+
+def test_reconnect_renews_with_configured_ttl(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_TTL_SECONDS", "300")
+
+    backend = osb.create_opensandbox_sandbox("abc-123-uuid")
+
+    assert backend._sandbox.renew_calls == [timedelta(seconds=300)]
+
+
+def test_invalid_ttl_raises(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_TTL_SECONDS", "not-an-int")
+
+    with pytest.raises(ValueError, match="OPEN_SANDBOX_TTL_SECONDS"):
+        osb.create_opensandbox_sandbox(None)
+
+
+# --------------------------------------------------------------------------- #
+# execute: exit-code passthrough, stdout/stderr merge, command timeout        #
+# --------------------------------------------------------------------------- #
+def test_execute_merges_stdout_and_stderr(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+    backend._sandbox.next_execution = _FakeExecution(
+        exit_code=0, stdout=["line1", "line2"], stderr=["err1"]
+    )
+
+    result = backend.execute("echo hi")
+
+    assert isinstance(result, ExecuteResponse)
+    assert result.output == "line1\nline2\nerr1"
+    assert result.exit_code == 0
+    assert result.truncated is False
+
+
+def test_execute_stderr_only(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+    backend._sandbox.next_execution = _FakeExecution(exit_code=1, stdout=[], stderr=["boom"])
+
+    result = backend.execute("false")
+
+    assert result.output == "boom"
+    assert result.exit_code == 1
+
+
+def test_execute_passes_timeout_exit_code_through(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+    backend._sandbox.next_execution = _FakeExecution(exit_code=-1, stdout=["partial"])
+
+    result = backend.execute("sleep 999")
+
+    assert result.exit_code == -1
+
+
+def test_execute_uses_default_command_timeout(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+
+    backend.execute("echo hi")
+
+    _command, opts = backend._sandbox.run_calls[-1]
+    assert opts.timeout == timedelta(seconds=1800)
+
+
+def test_execute_honors_explicit_timeout(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+
+    backend.execute("echo hi", timeout=45)
+
+    _command, opts = backend._sandbox.run_calls[-1]
+    assert opts.timeout == timedelta(seconds=45)
+
+
+def test_execute_command_timeout_env_override(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_COMMAND_TIMEOUT_SECONDS", "600")
+    backend = osb.create_opensandbox_sandbox(None)
+
+    backend.execute("echo hi")
+
+    _command, opts = backend._sandbox.run_calls[-1]
+    assert opts.timeout == timedelta(seconds=600)
+
+
+# --------------------------------------------------------------------------- #
+# upload_files / download_files: partial success + parent-dir creation        #
+# --------------------------------------------------------------------------- #
+def test_upload_creates_parent_dirs_and_writes(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+
+    responses = backend.upload_files([("/workspace/sub/dir/file.txt", b"data")])
+
+    assert responses == [FileUploadResponse(path="/workspace/sub/dir/file.txt", error=None)]
+    assert "/workspace/sub/dir" in backend._sandbox.created_dirs
+    assert backend._sandbox.written["/workspace/sub/dir/file.txt"] == b"data"
+
+
+def test_upload_partial_success_does_not_raise(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+    backend._sandbox.write_errors["/bad.txt"] = RuntimeError("disk full")
+
+    responses = backend.upload_files([("/good.txt", b"ok"), ("/bad.txt", b"nope")])
+
+    assert responses[0].path == "/good.txt"
+    assert responses[0].error is None
+    assert responses[1].path == "/bad.txt"
+    assert responses[1].error is not None
+    assert backend._sandbox.written["/good.txt"] == b"ok"
+
+
+def test_download_returns_bytes(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+    backend._sandbox.files_content["/workspace/a.txt"] = b"hello"
+
+    responses = backend.download_files(["/workspace/a.txt"])
+
+    assert responses == [
+        FileDownloadResponse(path="/workspace/a.txt", content=b"hello", error=None)
+    ]
+
+
+def test_download_partial_success_maps_not_found(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+    backend._sandbox.files_content["/workspace/a.txt"] = b"hello"
+    backend._sandbox.read_errors["/workspace/missing.txt"] = osb.SandboxApiException(
+        "gone", status_code=404
+    )
+
+    responses = backend.download_files(["/workspace/a.txt", "/workspace/missing.txt"])
+
+    assert responses[0].content == b"hello"
+    assert responses[0].error is None
+    assert responses[1].content is None
+    assert responses[1].error == FILE_NOT_FOUND
+
+
+# --------------------------------------------------------------------------- #
+# id / kill / close                                                           #
+# --------------------------------------------------------------------------- #
+def test_kill_and_close_forwarded(osb):
+    backend = osb.create_opensandbox_sandbox(None)
+
+    backend.kill()
+    backend.close()
+
+    assert backend._sandbox.killed is True
+    assert backend._sandbox.closed is True
+
+
+# --------------------------------------------------------------------------- #
+# is_recoverable_sandbox_error truth table (D5)                               #
+# --------------------------------------------------------------------------- #
+def test_recoverable_internal_exception(osb):
+    assert osb.is_recoverable_sandbox_error(osb.SandboxInternalException("net down")) is True
+
+
+@pytest.mark.parametrize("status", [404, 500, 502, 503, 504])
+def test_recoverable_api_status_codes(osb, status):
+    assert (
+        osb.is_recoverable_sandbox_error(osb.SandboxApiException("x", status_code=status)) is True
+    )
+
+
+@pytest.mark.parametrize("status", [401, 403, 400, 422])
+def test_non_recoverable_api_status_codes(osb, status):
+    assert (
+        osb.is_recoverable_sandbox_error(osb.SandboxApiException("x", status_code=status)) is False
+    )
+
+
+def test_non_sandbox_exception_not_recoverable(osb):
+    assert osb.is_recoverable_sandbox_error(TypeError("bug")) is False
+    assert osb.is_recoverable_sandbox_error(ValueError("bug")) is False
+
+
+# --------------------------------------------------------------------------- #
+# startup validation                                                          #
+# --------------------------------------------------------------------------- #
+def test_validate_startup_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPEN_SANDBOX_API_KEY", raising=False)
+    module = _load_opensandbox_module(monkeypatch)
+
+    with pytest.raises(ValueError, match="OPEN_SANDBOX_API_KEY"):
+        module.validate_startup_config()
+
+
+def test_validate_startup_probes_health(osb, monkeypatch):
+    probed = {}
+
+    def fake_probe(url):
+        probed["url"] = url
+
+    monkeypatch.setattr(osb, "_probe_health", fake_probe)
+
+    osb.validate_startup_config()
+
+    assert probed["url"] == "http://localhost:8090/health"
+
+
+def test_validate_startup_raises_on_unreachable(osb, monkeypatch):
+    def fake_probe(url):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(osb, "_probe_health", fake_probe)
+
+    with pytest.raises(ValueError, match="health check"):
+        osb.validate_startup_config()
+
+
+# --------------------------------------------------------------------------- #
+# Registry + startup dispatch in agent/utils/sandbox.py                        #
+# --------------------------------------------------------------------------- #
+def test_registry_has_opensandbox_entry():
+    from agent.utils.sandbox import SANDBOX_FACTORIES
+
+    assert SANDBOX_FACTORIES["opensandbox"] == (
+        "agent.integrations.opensandbox",
+        "create_opensandbox_sandbox",
+    )
+
+
+def test_validate_sandbox_startup_config_dispatches_opensandbox(monkeypatch):
+    _install_opensandbox_fakes(monkeypatch)
+    monkeypatch.setenv("SANDBOX_TYPE", "opensandbox")
+    monkeypatch.setenv("OPEN_SANDBOX_API_KEY", "test-key")
+    monkeypatch.setenv("OPEN_SANDBOX_DOMAIN", "localhost:8090")
+    monkeypatch.delitem(sys.modules, "agent.integrations.opensandbox", raising=False)
+
+    probed = {}
+    try:
+        import agent.integrations.opensandbox as osb_module
+
+        monkeypatch.setattr(osb_module, "_probe_health", lambda url: probed.setdefault("url", url))
+
+        from agent.utils.sandbox import validate_sandbox_startup_config
+
+        validate_sandbox_startup_config()
+        assert probed["url"] == "http://localhost:8090/health"
+    finally:
+        sys.modules.pop("agent.integrations.opensandbox", None)
