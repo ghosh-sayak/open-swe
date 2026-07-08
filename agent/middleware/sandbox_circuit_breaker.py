@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
@@ -26,6 +27,7 @@ SANDBOX_UNRECOVERABLE_MESSAGE = "Sandbox became unrecoverable mid-task. Please r
 
 _CIRCUIT_BREAKER_MARKER = "Sandbox circuit breaker triggered"
 _SANDBOX_RECREATED_AFTER_CLIENT_ERROR = "sandbox_recreated_after_client_error"
+_SANDBOX_UNREACHABLE_ERROR_CLASS = "sandbox_unreachable"
 _SANDBOX_ID_RE = re.compile(r"\bsb-[A-Za-z0-9-]+\b")
 
 
@@ -57,6 +59,35 @@ def _extract_sandbox_id(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _structured_sandbox_id(text: str) -> str | None:
+    """Sandbox id from a structured error_class payload (provider-agnostic ids)."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("error_class") != _SANDBOX_UNREACHABLE_ERROR_CLASS:
+        return None
+    sandbox_id = data.get("sandbox_id")
+    return sandbox_id if isinstance(sandbox_id, str) and sandbox_id else None
+
+
+def _unreachable_sandbox_id(text: str) -> str | None:
+    """Failing sandbox id if this message marks an unreachable-sandbox error.
+
+    Prefers the structured error_class/sandbox_id fields; falls back to the
+    legacy SandboxClientError substring + sb- id regex for pre-structured
+    payloads so existing behavior is preserved.
+    """
+    structured = _structured_sandbox_id(text)
+    if structured is not None:
+        return structured
+    if "SandboxClientError" in text:
+        return _extract_sandbox_id(text)
+    return None
+
+
 def _last_message_has_circuit_breaker_marker(messages: Sequence[BaseMessage]) -> bool:
     if not messages:
         return False
@@ -80,8 +111,8 @@ def _sandbox_error_streak(messages: Sequence[BaseMessage]) -> SandboxErrorStreak
                 count += 1
                 continue
 
-            message_sandbox_id = _extract_sandbox_id(text)
-            if "SandboxClientError" not in text or message_sandbox_id is None:
+            message_sandbox_id = _unreachable_sandbox_id(text)
+            if message_sandbox_id is None:
                 break
             if reason is None:
                 reason = "client_error"

@@ -29,7 +29,6 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgent
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.language_models import BaseChatModel
-from langsmith.sandbox import SandboxClientError
 
 from .dashboard.admin import is_observability_authorized
 from .dashboard.agent_overrides import (
@@ -108,7 +107,7 @@ from .utils.model import (
     make_model,
     provider_model_kwargs,
 )
-from .utils.sandbox import create_sandbox
+from .utils.sandbox import create_sandbox, get_recoverable_predicate
 from .utils.sandbox_github_auth import configure_github_auth
 from .utils.sandbox_paths import aresolve_sandbox_work_dir
 from .utils.tracing import AGENT_TRACING_PROJECT, traced_graph_factory
@@ -396,16 +395,20 @@ async def check_or_recreate_sandbox(
 ) -> SandboxBackendProtocol:
     """Check if a cached sandbox is reachable; recreate it if not.
 
-    Pings the sandbox with a lightweight command. If the sandbox is
-    unreachable (SandboxClientError), it is torn down and a fresh one
-    is created via _recreate_sandbox.
+    Pings the sandbox with a lightweight command. If the active provider's
+    recoverability predicate classifies the failure as a dead/unreachable
+    sandbox, it is torn down and a fresh one is created via _recreate_sandbox;
+    any other exception propagates (recreation is destructive and must never
+    be triggered by a non-sandbox bug).
 
     Returns the original backend if healthy, or a new one if recreated.
     """
     try:
         await asyncio.to_thread(sandbox_backend.execute, "echo ok")
         await _renew_sandbox_ttl_if_supported(sandbox_backend)
-    except SandboxClientError:
+    except Exception as e:
+        if not get_recoverable_predicate()(e):
+            raise
         logger.warning(
             "Cached sandbox is no longer reachable for thread %s, recreating",
             thread_id,
@@ -477,7 +480,7 @@ async def ensure_sandbox_for_thread(
 
     Implements the four-state lifecycle described in AGENTS.md:
 
-    1. Cached in memory → ping; recreate on ``SandboxClientError``.
+    1. Cached in memory → ping; recreate when the provider predicate says dead.
     2. Metadata says ``__creating__`` and no cache → wait for the creating
        worker; only reset if the sentinel is proven stale (timestamp/timeout).
     3. No sandbox at all → create one and persist the id.
