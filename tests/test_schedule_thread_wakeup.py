@@ -13,9 +13,8 @@ def _config(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "configurable": {
             "thread_id": "test-thread-123",
-            "source": "slack",
+            "source": "github",
             "repo": {"owner": "langchain-ai", "name": "open-swe"},
-            "slack_thread": {"channel_id": "C1", "thread_ts": "1.0"},
             "github_login": "johannes117",
             "user_email": "johannes@example.com",
         }
@@ -54,7 +53,7 @@ async def test_schedule_thread_wakeup_rejects_missing_thread_id(
     monkeypatch.setattr(
         wakeup_tool,
         "get_config",
-        lambda: {"configurable": {"source": "slack"}},
+        lambda: {"configurable": {"source": "github"}},
     )
     result = await wakeup_tool.schedule_thread_wakeup(5)
     assert result["success"] is False
@@ -97,9 +96,8 @@ async def test_schedule_thread_wakeup_creates_cron(monkeypatch: pytest.MonkeyPat
     assert captured["thread_id"] == "test-thread-123"
     assert captured["prompt"] == "Check CI status"
     assert captured["configurable"]["thread_id"] == "test-thread-123"
-    assert captured["configurable"]["source"] == "slack"
+    assert captured["configurable"]["source"] == "github"
     assert captured["configurable"]["repo"] == {"owner": "langchain-ai", "name": "open-swe"}
-    assert captured["configurable"]["slack_thread"] == {"channel_id": "C1", "thread_ts": "1.0"}
     assert captured["configurable"]["github_login"] == "johannes117"
 
     now = datetime.now(UTC)

@@ -56,7 +56,6 @@ from .utils.auth import (
     is_bot_token_only_mode,
     resolve_github_token_from_email,
 )
-from .utils.comments import get_recent_comments  # noqa: F401
 from .utils.dashboard_links import dashboard_thread_url  # noqa: F401
 from .utils.github_app import (
     get_github_app_installation_token,  # noqa: F401

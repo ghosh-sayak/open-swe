@@ -204,7 +204,7 @@ def upsert_run_outcome(
     repo: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> bool:
-    """Upsert a coarse run-level outcome (e.g. a Slack 👍/👎 on a review).
+    """Upsert a coarse run-level outcome (e.g. a 👍/👎 on a review).
 
     These have no finding/diff anchor, so they are tagged
     ``granularity="run"`` and ignored by the per-repo analyzer reader.

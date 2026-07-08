@@ -1,6 +1,6 @@
 """Shared LangGraph thread helpers for the dashboard.
 
-The webhook triggers (Slack / Linear / GitHub) dispatch through
+The webhook triggers (GitHub / dashboard) dispatch through
 ``agent.dispatch.dispatch_agent_run`` with ``multitask_strategy="interrupt"``,
 so they no longer need a busy-check or an in-process lock. The store-queue
 below is retained for the dashboard's deliberate "inject a follow-up into a
