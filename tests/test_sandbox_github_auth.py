@@ -142,6 +142,53 @@ class TestCreateSandboxWithProxyOpensandbox:
             backend.kill.assert_called_once()
 
 
+class TestOpensandboxRecordsTokenExpiry:
+    @pytest.mark.asyncio
+    async def test_create_records_expiry_for_midrun_refresh(self) -> None:
+        with (
+            patch(
+                "agent.server.get_github_app_installation_token_with_expiry",
+                new_callable=AsyncMock,
+                return_value=("ghs_install", "2025-01-01T13:00:00Z"),
+            ),
+            patch("agent.server.create_sandbox") as mock_create,
+            patch("agent.server.configure_github_auth"),
+            patch("agent.server.record_proxy_token_expiry") as mock_record,
+            patch.dict("os.environ", {"SANDBOX_TYPE": "opensandbox"}),
+        ):
+            mock_create.return_value = MagicMock(id="uuid-1")
+
+            from agent.server import _create_sandbox_with_proxy
+
+            await _create_sandbox_with_proxy(thread_id="thread-1")
+
+            mock_record.assert_called_once()
+            args, _kwargs = mock_record.call_args
+            assert args[0] == "thread-1"
+            assert args[1] == "2025-01-01T13:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_refresh_records_expiry_for_midrun_refresh(self) -> None:
+        with (
+            patch(
+                "agent.server.get_github_app_installation_token_with_expiry",
+                new_callable=AsyncMock,
+                return_value=("ghs_fresh", "2025-01-01T13:00:00Z"),
+            ),
+            patch("agent.server.configure_github_auth"),
+            patch("agent.server.record_proxy_token_expiry") as mock_record,
+            patch.dict("os.environ", {"SANDBOX_TYPE": "opensandbox"}),
+        ):
+            from agent.server import _refresh_github_proxy
+
+            await _refresh_github_proxy(MagicMock(id="uuid-2"), thread_id="thread-2")
+
+            mock_record.assert_called_once()
+            args, _kwargs = mock_record.call_args
+            assert args[0] == "thread-2"
+            assert args[1] == "2025-01-01T13:00:00Z"
+
+
 class TestRefreshGithubProxyOpensandbox:
     @pytest.mark.asyncio
     async def test_rewrites_hosts_yml_on_reuse(self) -> None:

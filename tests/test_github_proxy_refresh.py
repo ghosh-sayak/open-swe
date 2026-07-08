@@ -134,6 +134,46 @@ class TestMaybeRefreshProxyToken:
         assert permissions == ()
 
     @pytest.mark.asyncio
+    async def test_opensandbox_rewrites_hosts_yml_not_proxy(self) -> None:
+        now = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        record_proxy_token_expiry("thread-1", now + timedelta(minutes=1))
+        backend = MagicMock(id="uuid-1")
+
+        with (
+            patch.dict("os.environ", {"SANDBOX_TYPE": "opensandbox"}),
+            patch.dict(github_proxy.SANDBOX_BACKENDS, {"thread-1": backend}, clear=True),
+            patch(
+                "agent.utils.github_proxy.get_github_app_installation_token_with_expiry",
+                new=AsyncMock(return_value=("ghs_new", "2025-01-01T13:00:00Z")),
+            ),
+            patch("agent.utils.sandbox_github_auth.configure_github_auth") as mock_auth,
+            patch("agent.integrations.langsmith._configure_github_proxy") as mock_proxy,
+        ):
+            result = await maybe_refresh_proxy_token("thread-1", now=now)
+
+        assert result is True
+        mock_auth.assert_called_once_with(backend, "ghs_new")
+        mock_proxy.assert_not_called()
+        expires_at, _recorded, _scope, _permissions = github_proxy._PROXY_TOKEN_EXPIRY["thread-1"]
+        assert expires_at == datetime(2025, 1, 1, 13, 0, 0, tzinfo=UTC)
+
+    @pytest.mark.asyncio
+    async def test_skips_when_provider_unsupported(self) -> None:
+        now = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        record_proxy_token_expiry("thread-1", now + timedelta(minutes=1))
+        backend = MagicMock(id="dt-1")
+
+        with (
+            patch.dict("os.environ", {"SANDBOX_TYPE": "daytona"}),
+            patch.dict(github_proxy.SANDBOX_BACKENDS, {"thread-1": backend}, clear=True),
+            patch(
+                "agent.utils.github_proxy.get_github_app_installation_token_with_expiry",
+                new=AsyncMock(return_value=("ghs_new", "2025-01-01T13:00:00Z")),
+            ),
+        ):
+            assert await maybe_refresh_proxy_token("thread-1", now=now) is False
+
+    @pytest.mark.asyncio
     async def test_no_refresh_when_token_unavailable(self) -> None:
         now = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
         record_proxy_token_expiry("thread-1", now + timedelta(minutes=1))

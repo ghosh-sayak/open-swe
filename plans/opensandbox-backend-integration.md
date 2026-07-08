@@ -152,8 +152,13 @@ after create/claim, open-swe writes into the sandbox **via the exec channel**:
    `poc/daytona`'s `_create_sandbox_with_proxy` daytona branch).
 
 The gh-wrapper in the sandbox image (`unset GH_TOKEN GITHUB_TOKEN; exec /usr/bin/gh`) strips the
-prompts' `dummy` token so `gh` falls back to `hosts.yml`. The `_refresh_github_proxy` hook rewrites
-these hourly (rotation-safe).
+prompts' `dummy` token so `gh` falls back to `hosts.yml`. GitHub App installation tokens are
+**GitHub-capped at 1 h** (not configurable), so `hosts.yml`/`insteadOf` are rewritten at run-start
+via `_refresh_github_proxy` (per run) AND mid-run via the before-model
+`refresh_github_proxy_before_model` → `maybe_refresh_proxy_token` hook (provider-aware; rewrites
+`hosts.yml` for opensandbox before the recorded expiry) so a single run longer than ~1 h keeps
+valid credentials. Each rewrite removes any stale `x-access-token` `insteadOf` section first — git
+resolves equal-length matches to the first section, so append-only would pin the expired token.
 
 **Why not pod-env injection (the initial Akeyless-as-env idea):** (a) the inline `GH_TOKEN=dummy`
 shadows any ambient `GH_TOKEN` per-command, so a pod env var is overridden on every call — the whole
@@ -282,7 +287,11 @@ over exec, refreshed hourly). `CMD ["bash"]` is harmless dead code (OpenSandbox 
   (env present + server `/health` reachable at startup).
 - `agent/server.py` — opensandbox branch in `_create_sandbox_with_proxy` / `_refresh_github_proxy`
   calling `configure_github_auth`; ping guard + reconnect use the recoverability predicate; `renew`
-  on reconnect/ping; wire the pooling create-seam.
+  on reconnect/ping; wire the pooling create-seam. Both auth branches also `record_proxy_token_expiry`
+  so the mid-run before-model refresh fires for long (>1h) single runs (D3).
+- `agent/utils/github_proxy.py` — `refresh_proxy_token` is provider-aware: langsmith re-patches the
+  proxy API, opensandbox rewrites `hosts.yml` via `configure_github_auth`. `maybe_refresh_proxy_token`
+  gate widened from langsmith-only to `{langsmith, opensandbox}`.
 - `agent/middleware/tool_error_handler.py` — predicate-gated recreation; structured
   `error_class`/`sandbox_id` payload fields.
 - `agent/middleware/sandbox_circuit_breaker.py` — match structured fields (legacy substring/regex as
@@ -351,7 +360,9 @@ preload the sandbox image on nodes for large first pulls.
   stdout/stderr merge, timeout→`RunCommandOpts`); upload/download partial-success + mkdir parents;
   `is_recoverable_sandbox_error` truth table (404/5xx vs 401); registry dispatch
   (`SANDBOX_TYPE=opensandbox`). Recovery-middleware: keep the 4 existing langsmith tests unchanged;
-  add UUID-id + opensandbox-exception variants.
+  add UUID-id + opensandbox-exception variants. Mid-run refresh: `maybe_refresh_proxy_token` fires
+  for opensandbox and `refresh_proxy_token` rewrites `hosts.yml` (via `configure_github_auth`), not
+  the proxy API.
 - **Integration** (`tests/integration_tests/test_opensandbox_e2e.py`, `OPENSANDBOX_INTEGRATION=1`,
   populates the currently-empty `make integration_tests`): against a real local container —
   `execute("echo ok")` exit code; write→read→edit→grep→glob round-trip; upload/download bytes;

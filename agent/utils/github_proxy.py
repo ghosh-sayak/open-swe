@@ -112,14 +112,25 @@ def proxy_token_needs_refresh(thread_id: str | None, *, now: datetime | None = N
     return (current - recorded_at) >= PROXY_TOKEN_FALLBACK_TTL
 
 
+# Providers whose in-sandbox GitHub credentials go stale within a run and must
+# be rewritten mid-run: langsmith re-patches the proxy API; opensandbox rewrites
+# hosts.yml over exec. Both rest on GitHub's non-configurable 1h token lifetime.
+_MIDRUN_REFRESH_PROVIDERS = frozenset({"langsmith", "opensandbox"})
+
+
 async def refresh_proxy_token(
     thread_id: str | None,
     *,
     repositories: Sequence[str] | None = None,
     permissions: PermissionMap | None = None,
 ) -> bool:
-    """Re-configure a LangSmith sandbox proxy with a freshly minted token."""
-    if os.getenv("SANDBOX_TYPE", "langsmith") != "langsmith" or not thread_id:
+    """Re-configure a reused sandbox with a freshly minted GitHub token.
+
+    Provider-aware: langsmith re-patches the sandbox proxy; opensandbox rewrites
+    hosts.yml + insteadOf via the shared exec helper.
+    """
+    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
+    if sandbox_type not in _MIDRUN_REFRESH_PROVIDERS or not thread_id:
         return False
 
     sandbox_backend = SANDBOX_BACKENDS.get(thread_id)
@@ -141,10 +152,15 @@ async def refresh_proxy_token(
         logger.warning("Proxy token refresh for thread %s failed: no installation token", thread_id)
         return False
 
-    from ..integrations.langsmith import _configure_github_proxy
-
     current_backend = unwrap_sandbox_backend(sandbox_backend)
-    await asyncio.to_thread(_configure_github_proxy, current_backend.id, token)
+    if sandbox_type == "opensandbox":
+        from .sandbox_github_auth import configure_github_auth
+
+        await asyncio.to_thread(configure_github_auth, current_backend, token)
+    else:
+        from ..integrations.langsmith import _configure_github_proxy
+
+        await asyncio.to_thread(_configure_github_proxy, current_backend.id, token)
     record_proxy_token_expiry(
         thread_id,
         expires_at,
@@ -158,8 +174,9 @@ async def refresh_proxy_token(
 async def maybe_refresh_proxy_token(thread_id: str | None, *, now: datetime | None = None) -> bool:
     """Re-configure the sandbox proxy with a fresh token when near expiry.
 
-    Returns True when a refresh was performed. Only applies to LangSmith
-    sandboxes; other providers don't use the proxy.
+    Returns True when a refresh was performed. Applies to providers whose
+    in-sandbox credentials expire within a run (langsmith proxy, opensandbox
+    hosts.yml); other providers don't rotate mid-run.
     """
     if not thread_id or not proxy_token_needs_refresh(thread_id, now=now):
         return False

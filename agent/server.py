@@ -238,7 +238,7 @@ async def _create_sandbox_with_proxy(
         )
 
     elif sandbox_type == "opensandbox":
-        token, _expires_at = await _resolve_proxy_token(github_proxy_token)
+        token, expires_at = await _resolve_proxy_token(github_proxy_token)
         if not token:
             msg = "Cannot configure git auth: GitHub App installation token is unavailable"
             logger.error(msg)
@@ -248,6 +248,14 @@ async def _create_sandbox_with_proxy(
         # sandbox over exec. The image's gh wrapper strips the prompts' dummy
         # GH_TOKEN so gh falls back to these credentials.
         await asyncio.to_thread(configure_github_auth, sandbox_backend, token)
+        # Record expiry so the before-model hook rewrites hosts.yml before the
+        # GitHub-capped 1h token lapses on a long single run.
+        record_proxy_token_expiry(
+            thread_id,
+            expires_at,
+            repositories=github_proxy_repositories,
+            permissions=None if github_proxy_token else RUNTIME_PROXY_TOKEN_PERMISSIONS,
+        )
         logger.info(
             "Configured git and gh credentials in OpenSandbox sandbox %s", sandbox_backend.id
         )
@@ -266,7 +274,7 @@ async def _refresh_github_proxy(
     sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
 
     if sandbox_type == "opensandbox":
-        token, _expires_at = await _resolve_proxy_token(github_proxy_token)
+        token, expires_at = await _resolve_proxy_token(github_proxy_token)
         if not token:
             logger.warning(
                 "Skipping GitHub auth refresh for sandbox %s: installation token unavailable",
@@ -275,6 +283,12 @@ async def _refresh_github_proxy(
             return
         current_backend = unwrap_sandbox_backend(sandbox_backend)
         await asyncio.to_thread(configure_github_auth, current_backend, token)
+        record_proxy_token_expiry(
+            thread_id,
+            expires_at,
+            repositories=github_proxy_repositories,
+            permissions=None if github_proxy_token else RUNTIME_PROXY_TOKEN_PERMISSIONS,
+        )
         logger.info(
             "Refreshed git and gh credentials in OpenSandbox sandbox %s", current_backend.id
         )
