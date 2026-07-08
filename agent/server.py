@@ -58,7 +58,6 @@ from .middleware import (
     SandboxCircuitBreakerMiddleware,
     SanitizeThinkingBlocksMiddleware,
     SanitizeToolInputsMiddleware,
-    SlackAssistantStatusMiddleware,
     ToolArtifactMiddleware,
     ToolErrorMiddleware,
     WorkflowPushGuardMiddleware,
@@ -72,19 +71,10 @@ from .tools import (
     enter_plan_mode,
     fetch_url,
     http_request,
-    linear_comment,
-    linear_create_issue,
-    linear_delete_issue,
-    linear_get_issue,
-    linear_get_issue_comments,
-    linear_list_teams,
-    linear_update_issue,
     open_pull_request,
     request_pr_review,
     save_plan,
     schedule_thread_wakeup,
-    slack_read_thread_messages,
-    slack_thread_reply,
     web_search,
 )
 from .utils.auth import resolve_github_token
@@ -645,7 +635,7 @@ MODEL_CALL_RECURSION_LIMIT = 5_000
 # than enforced. `http_request` is excluded because it can POST/PUT/PATCH/DELETE
 # to external services — read-only web research goes through `web_search` /
 # `fetch_url`. `task` is excluded because the general-purpose subagent is built
-# with its own filesystem/PR/Linear tools and does not inherit this exclusion, so
+# with its own filesystem/PR tools and does not inherit this exclusion, so
 # delegating to it would bypass the read-only intent.
 PLAN_MODE_EXCLUDED_TOOLS: frozenset[str] = frozenset(
     {
@@ -655,9 +645,6 @@ PLAN_MODE_EXCLUDED_TOOLS: frozenset[str] = frozenset(
         "http_request",
         "open_pull_request",
         "request_pr_review",
-        "linear_create_issue",
-        "linear_update_issue",
-        "linear_delete_issue",
     }
 )
 
@@ -685,12 +672,10 @@ async def _observability_authorized(config: RunnableConfig, profile_login: str |
     untrusted contributors cannot reach the team's Datadog/LangSmith data.
     """
     configurable = (config or {}).get("configurable") or {}
-    slack_thread = configurable.get("slack_thread") or {}
     config_login = configurable.get("github_login")
     candidate_login = profile_login or (config_login if isinstance(config_login, str) else None)
     candidate_emails = [
         configurable.get("user_email"),
-        slack_thread.get("triggering_user_email"),
     ]
     if any(is_observability_authorized(email, login=candidate_login) for email in candidate_emails):
         return True
@@ -761,10 +746,6 @@ async def get_agent(config: RunnableConfig) -> Pregel:
     )
     profile = await profile_task if profile_task is not None else None
     del github_token
-
-    linear_issue = config["configurable"].get("linear_issue", {})
-    linear_project_id = linear_issue.get("linear_project_id", "")
-    linear_issue_number = linear_issue.get("linear_issue_number", "")
 
     work_dir = await aresolve_sandbox_work_dir(sandbox_backend)
 
@@ -917,8 +898,6 @@ async def get_agent(config: RunnableConfig) -> Pregel:
         model=main_model,
         system_prompt=construct_system_prompt(
             working_dir=work_dir,
-            linear_project_id=linear_project_id,
-            linear_issue_number=linear_issue_number,
             triggering_user_identity=triggering_user_identity,
             create_prs=always_create_prs,
             default_repo=prompt_default_repo,
@@ -934,18 +913,9 @@ async def get_agent(config: RunnableConfig) -> Pregel:
             web_search,
             enter_plan_mode,
             save_plan,
-            linear_comment,
-            linear_create_issue,
-            linear_delete_issue,
-            linear_get_issue,
-            linear_get_issue_comments,
-            linear_list_teams,
-            linear_update_issue,
             open_pull_request,
             request_pr_review,
             schedule_thread_wakeup,
-            slack_read_thread_messages,
-            slack_thread_reply,
             *corridor_tools,
             *observability_tools,
             *currents_tools,
@@ -961,7 +931,6 @@ async def get_agent(config: RunnableConfig) -> Pregel:
             WorkflowPushGuardMiddleware(),
             refresh_github_proxy_before_model,
             check_message_queue_before_model,
-            SlackAssistantStatusMiddleware(),
             ensure_no_empty_msg,
             notify_step_limit_reached,
             SandboxCircuitBreakerMiddleware(),

@@ -144,33 +144,19 @@ def test_workflow_change_for_push_rejects_non_current_refspec() -> None:
     )
 
 
-async def test_unapproved_workflow_push_blocks_and_posts_slack(
+async def test_unapproved_workflow_push_blocks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     guard.SANDBOX_BACKENDS["thread-1"] = _Backend()
-    posted: dict[str, Any] = {}
 
     async def fake_approved(thread_id: str, fingerprint: str) -> bool:
         return False
 
     async def fake_pending(thread_id: str, **kwargs: Any) -> tuple[dict[str, Any], bool]:
-        return {"fingerprint": kwargs["fingerprint"], "status": "pending", "notified": False}, True
-
-    async def fake_post(
-        channel_id: str, thread_ts: str, message: str, **kwargs: Any
-    ) -> tuple[str, None]:
-        posted.update(
-            channel_id=channel_id, thread_ts=thread_ts, message=message, blocks=kwargs["blocks"]
-        )
-        return "1700000000.000200", None
-
-    async def fake_notified(thread_id: str, fingerprint: str) -> None:
-        posted["notified"] = fingerprint
+        return {"fingerprint": kwargs["fingerprint"], "status": "pending"}, True
 
     monkeypatch.setattr(guard, "workflow_push_approved", fake_approved)
     monkeypatch.setattr(guard, "ensure_workflow_push_pending", fake_pending)
-    monkeypatch.setattr(guard, "post_slack_thread_reply_with_ts", fake_post)
-    monkeypatch.setattr(guard, "mark_workflow_push_notified", fake_notified)
 
     called = False
 
@@ -187,8 +173,6 @@ async def test_unapproved_workflow_push_blocks_and_posts_slack(
     payload = json.loads(str(result.content))
     assert payload["workflow_approval_status"] == "approval_required"
     assert payload["files"] == [".github/workflows/ci.yml"]
-    assert posted["channel_id"] == "C123"
-    assert posted["blocks"][1]["elements"][0]["value"]
 
 
 async def test_approved_workflow_push_elevates_and_restores(

@@ -21,17 +21,14 @@ from langgraph.types import Command
 
 from ..dashboard.workflow_approval import (
     ensure_workflow_push_pending,
-    mark_workflow_push_notified,
     workflow_push_approved,
 )
-from ..tools.slack_thread_reply import build_workflow_approval_blocks
 from ..utils.github_app import (
     RUNTIME_PROXY_TOKEN_PERMISSIONS,
     WORKFLOW_RUNTIME_PROXY_TOKEN_PERMISSIONS,
 )
 from ..utils.github_proxy import refresh_proxy_token
 from ..utils.sandbox_state import SANDBOX_BACKENDS
-from ..utils.slack import post_slack_thread_reply_with_ts
 
 logger = logging.getLogger(__name__)
 
@@ -404,48 +401,6 @@ def _override_execute_command(request: ToolCallRequest, command: str) -> ToolCal
     return request.override(tool_call={**dict(tool_call), "args": args})
 
 
-def _approval_slack_message(change: WorkflowPushChange) -> str:
-    files = "\n".join(f"• `{path}`" for path in change.files[:10])
-    if len(change.files) > 10:
-        files += f"\n• …and {len(change.files) - 10} more"
-    repo = change.repo or "the repository"
-    branch = change.branch or "the current branch"
-    return (
-        "*Workflow file approval required*\n"
-        f"Open SWE is trying to push changes to GitHub workflow files in `{repo}` on `{branch}`.\n\n"
-        f"*Files:*\n{files}\n\n"
-        f"*Fingerprint:* `{change.fingerprint}`\n\n"
-        "Approve only if this exact workflow diff is expected. If the workflow files change, "
-        "a new fingerprint will be required."
-    )
-
-
-async def _post_slack_approval_if_needed(
-    request: ToolCallRequest, change: WorkflowPushChange, record: Mapping[str, Any]
-) -> None:
-    if record.get("notified") is True:
-        return
-    configurable = _configurable(request)
-    slack_thread = configurable.get("slack_thread")
-    if not isinstance(slack_thread, Mapping):
-        return
-    channel_id = slack_thread.get("channel_id")
-    thread_ts = slack_thread.get("thread_ts")
-    if not isinstance(channel_id, str) or not isinstance(thread_ts, str):
-        return
-    message = _approval_slack_message(change)
-    message_ts, error = await post_slack_thread_reply_with_ts(
-        channel_id,
-        thread_ts,
-        message,
-        blocks=build_workflow_approval_blocks(message, change.fingerprint),
-    )
-    if message_ts and not error:
-        thread_id = _thread_id(request)
-        if thread_id:
-            await mark_workflow_push_notified(thread_id, change.fingerprint)
-
-
 async def _approval_state(request: ToolCallRequest, change: WorkflowPushChange) -> str:
     thread_id = _thread_id(request)
     if not thread_id:
@@ -462,7 +417,7 @@ async def _approval_state(request: ToolCallRequest, change: WorkflowPushChange) 
             head_sha=change.head_sha,
             files=change.files,
         )
-        await _post_slack_approval_if_needed(request, change, record)
+        # Pending approvals surface in the dashboard; the guard just blocks until then.
         return str(record.get("status") or "pending")
     except Exception:
         logger.exception("Failed to read or write workflow push approval state")

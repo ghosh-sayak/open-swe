@@ -62,7 +62,7 @@ def test_construct_system_prompt_explains_pause_to_ask_for_dependency_review() -
     prompt = construct_system_prompt(working_dir="/workspace")
 
     assert "You can stop to ask" in prompt
-    assert "post a question or note in the source Slack thread" in prompt
+    assert "post a question or note in the source GitHub thread or the PR description" in prompt
     assert "end your turn without making a tool call" in prompt
     assert "the user can reply and the run will resume" in prompt
     assert "You cannot pause to ask for approval mid-task" not in prompt
