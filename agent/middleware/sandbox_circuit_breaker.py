@@ -63,7 +63,7 @@ def _structured_sandbox_id(text: str) -> str | None:
     """Sandbox id from a structured error_class payload (provider-agnostic ids)."""
     try:
         data = json.loads(text)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict):
         return None

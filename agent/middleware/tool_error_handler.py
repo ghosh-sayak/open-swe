@@ -29,6 +29,15 @@ SANDBOX_RECREATED_AFTER_CLIENT_ERROR = "sandbox_recreated_after_client_error"
 SANDBOX_UNREACHABLE_ERROR_CLASS = "sandbox_unreachable"
 
 
+def _is_recoverable_sandbox_failure(e: Exception) -> bool:
+    """Fail-closed predicate wrapper: a broken predicate routes to the generic path."""
+    try:
+        return get_recoverable_predicate()(e)
+    except Exception:  # noqa: BLE001
+        logger.exception("Recoverability predicate failed; using generic error path")
+        return False
+
+
 def _get_name(candidate: object) -> str | None:
     if not candidate:
         return None
@@ -207,7 +216,7 @@ class ToolErrorMiddleware(AgentMiddleware):
         try:
             return handler(request)
         except Exception as e:
-            if not get_recoverable_predicate()(e):
+            if not _is_recoverable_sandbox_failure(e):
                 logger.exception("Error during tool call handling; request=%r", request)
                 return _generic_error_tool_message(e, request)
             logger.exception("Sandbox error during tool call handling; request=%r", request)
@@ -234,7 +243,7 @@ class ToolErrorMiddleware(AgentMiddleware):
         try:
             return await handler(request)
         except Exception as e:
-            if not get_recoverable_predicate()(e):
+            if not _is_recoverable_sandbox_failure(e):
                 logger.exception("Error during tool call handling; request=%r", request)
                 return _generic_error_tool_message(e, request)
             logger.exception("Sandbox error during tool call handling; request=%r", request)

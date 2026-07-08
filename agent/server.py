@@ -301,6 +301,22 @@ async def _refresh_github_proxy(
     )
 
 
+def _should_recreate_after_lifecycle_failure(e: Exception) -> bool:
+    """Whether a refresh/reconnect failure warrants a destructive recreate (D5).
+
+    Langsmith keeps its historical blanket-recreate on these lifecycle paths
+    (zero-delta); other providers recreate only when the predicate classifies
+    the sandbox as dead. Fail-closed: a broken predicate never recreates.
+    """
+    if os.getenv("SANDBOX_TYPE", "langsmith") == "langsmith":
+        return True
+    try:
+        return get_recoverable_predicate()(e)
+    except Exception:  # noqa: BLE001
+        logger.exception("Recoverability predicate failed; treating error as non-recoverable")
+        return False
+
+
 async def _refresh_github_proxy_or_recreate(
     sandbox_backend: SandboxBackendProtocol,
     thread_id: str,
@@ -316,7 +332,16 @@ async def _refresh_github_proxy_or_recreate(
             thread_id=thread_id,
             github_proxy_repositories=github_proxy_repositories,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        if not _should_recreate_after_lifecycle_failure(e):
+            logger.warning(
+                "GitHub auth refresh failed for sandbox %s on thread %s; keeping the "
+                "sandbox (refresh retries on the next run)",
+                sandbox_backend.id,
+                thread_id,
+                exc_info=True,
+            )
+            return sandbox_backend
         logger.warning(
             "Failed to refresh GitHub proxy for sandbox %s on thread %s, recreating sandbox",
             sandbox_backend.id,
@@ -407,7 +432,12 @@ async def check_or_recreate_sandbox(
         await asyncio.to_thread(sandbox_backend.execute, "echo ok")
         await _renew_sandbox_ttl_if_supported(sandbox_backend)
     except Exception as e:
-        if not get_recoverable_predicate()(e):
+        try:
+            recoverable = get_recoverable_predicate()(e)
+        except Exception:  # noqa: BLE001
+            logger.exception("Recoverability predicate failed during ping check")
+            recoverable = False
+        if not recoverable:
             raise
         logger.warning(
             "Cached sandbox is no longer reachable for thread %s, recreating",
@@ -532,7 +562,9 @@ async def ensure_sandbox_for_thread(
         created_replacement_sandbox = False
         try:
             sandbox_backend = await asyncio.to_thread(create_sandbox, sandbox_id)
-        except Exception:
+        except Exception as e:
+            if not _should_recreate_after_lifecycle_failure(e):
+                raise
             logger.warning("Failed to connect to existing sandbox %s, creating new one", sandbox_id)
             await client.threads.update(thread_id=thread_id, metadata=_creating_metadata())
             try:

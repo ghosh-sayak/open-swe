@@ -370,3 +370,171 @@ def test_circuit_breaker_trips_on_structured_uuid_recreations() -> None:
     assert result is not None
     assert result["jump_to"] == "end"
     assert "consecutive sandbox recreations" in result["messages"][0].content
+
+
+# --------------------------------------------------------------------------- #
+# Review fixes: refresh/reconnect gating, predicate hardening, JSON safety     #
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_refresh_failure_nonrecoverable_keeps_sandbox(opensandbox_env) -> None:
+    """An auth-refresh failure on a healthy sandbox must not destroy the workspace."""
+    backend = MagicMock(id=UUID_OLD)
+
+    with (
+        patch(
+            "agent.server._refresh_github_proxy",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("hosts.yml write failed (exit code 1)"),
+        ),
+        patch("agent.server._recreate_sandbox", new_callable=AsyncMock) as mock_recreate,
+    ):
+        from agent.server import _refresh_github_proxy_or_recreate
+
+        result = await _refresh_github_proxy_or_recreate(backend, "thread-1")
+
+    assert result is backend
+    mock_recreate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refresh_failure_recoverable_recreates(opensandbox_env) -> None:
+    backend = MagicMock(id=UUID_OLD)
+    replacement = MagicMock(id=UUID_NEW)
+
+    with (
+        patch(
+            "agent.server._refresh_github_proxy",
+            new_callable=AsyncMock,
+            side_effect=_FakeSandboxApiException("gone", status_code=503),
+        ),
+        patch(
+            "agent.server._recreate_sandbox", new_callable=AsyncMock, return_value=replacement
+        ) as mock_recreate,
+    ):
+        from agent.server import _refresh_github_proxy_or_recreate
+
+        result = await _refresh_github_proxy_or_recreate(backend, "thread-1")
+
+    assert result is replacement
+    mock_recreate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_failure_nonrecoverable_reraises_without_metadata_reset(
+    opensandbox_env,
+) -> None:
+    """A config bug on reconnect must not orphan a live sandbox's metadata."""
+    with (
+        patch(
+            "agent.server.get_sandbox_id_from_metadata",
+            new_callable=AsyncMock,
+            return_value="uuid-existing",
+        ),
+        patch(
+            "agent.server.create_sandbox",
+            side_effect=ValueError("OPEN_SANDBOX_TTL_SECONDS must be an integer"),
+        ),
+        patch(
+            "agent.server._create_sandbox_with_proxy", new_callable=AsyncMock
+        ) as mock_create_proxy,
+        patch("agent.server.client") as mock_client,
+        patch.dict("agent.server.SANDBOX_BACKENDS", {}, clear=True),
+    ):
+        mock_client.threads.update = AsyncMock()
+
+        from agent.server import ensure_sandbox_for_thread
+
+        with pytest.raises(ValueError, match="OPEN_SANDBOX_TTL_SECONDS"):
+            await ensure_sandbox_for_thread("thread-1")
+
+        mock_create_proxy.assert_not_awaited()
+        mock_client.threads.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_failure_recoverable_creates_replacement(opensandbox_env) -> None:
+    replacement = MagicMock(id=UUID_NEW)
+
+    with (
+        patch(
+            "agent.server.get_sandbox_id_from_metadata",
+            new_callable=AsyncMock,
+            return_value="uuid-existing",
+        ),
+        patch(
+            "agent.server.create_sandbox",
+            side_effect=_FakeSandboxApiException("expired", status_code=404),
+        ),
+        patch(
+            "agent.server._create_sandbox_with_proxy",
+            new_callable=AsyncMock,
+            return_value=replacement,
+        ) as mock_create_proxy,
+        patch("agent.server._configure_git_identity", new_callable=AsyncMock),
+        patch("agent.server.client") as mock_client,
+        patch.dict("agent.server.SANDBOX_BACKENDS", {}, clear=True),
+    ):
+        mock_client.threads.update = AsyncMock()
+
+        from agent.server import ensure_sandbox_for_thread
+
+        result = await ensure_sandbox_for_thread("thread-1")
+
+    assert result.id == UUID_NEW
+    mock_create_proxy.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_broken_predicate_falls_back_to_generic_error() -> None:
+    """A predicate that itself raises must fail closed to the generic path."""
+    middleware = ToolErrorMiddleware()
+    request = _tool_request()
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:
+        raise RuntimeError("tool blew up")
+
+    with (
+        patch(
+            "agent.middleware.tool_error_handler.get_recoverable_predicate",
+            side_effect=RuntimeError("predicate import failed"),
+        ),
+        patch("agent.server._recreate_sandbox", new_callable=AsyncMock) as mock_recreate,
+    ):
+        result = await middleware.awrap_tool_call(request, handler)
+
+    mock_recreate.assert_not_awaited()
+    payload = json.loads(result.content)
+    assert payload["error_type"] == "RuntimeError"
+    assert payload["error"] == "tool blew up"
+    assert "recovery" not in payload
+
+
+@pytest.mark.asyncio
+async def test_ping_guard_broken_predicate_reraises_original_error() -> None:
+    backend = _PingBackend(SandboxClientError("unreachable"))
+
+    with (
+        patch(
+            "agent.server.get_recoverable_predicate",
+            side_effect=RuntimeError("predicate import failed"),
+        ),
+        patch("agent.server._recreate_sandbox", new_callable=AsyncMock) as mock_recreate,
+    ):
+        from agent.server import check_or_recreate_sandbox
+
+        with pytest.raises(SandboxClientError, match="unreachable"):
+            await check_or_recreate_sandbox(backend, "thread-1")
+
+    mock_recreate.assert_not_awaited()
+
+
+def test_circuit_breaker_survives_pathological_json() -> None:
+    deep = "[" * 100000 + "]" * 100000
+    middleware = SandboxCircuitBreakerMiddleware(threshold=2)
+    messages = [
+        HumanMessage(content="please fix this"),
+        AIMessage(content="", tool_calls=[{"name": "ls", "args": {}, "id": "tc1"}]),
+        ToolMessage(content=deep, tool_call_id="tc1", status="error"),
+    ]
+
+    assert middleware.before_model({"messages": messages}, MagicMock()) is None
