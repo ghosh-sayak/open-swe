@@ -21,7 +21,7 @@ USAGE_LEADERBOARD_CACHE_NAMESPACE: list[str] = ["agent_usage", "leaderboard_cach
 REVIEWER_STATS_CACHE_NAMESPACE: list[str] = ["agent_usage", "reviewer_stats_cache"]
 
 Period = Literal["7d", "30d", "all"]
-_AGENT_SOURCES = frozenset({"dashboard", "github", "slack", "linear"})
+_AGENT_SOURCES = frozenset({"dashboard", "github"})
 _PR_REFRESH_INTERVAL_MS = 10 * 60 * 1000
 _MAX_PR_REFRESH_PER_REQUEST = 25
 _PR_REFRESH_CONCURRENCY = 5

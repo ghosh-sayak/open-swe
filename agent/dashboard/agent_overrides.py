@@ -44,8 +44,7 @@ def resolve_github_login(config: dict[str, Any]) -> str | None:
     if isinstance(login, str) and login.strip():
         return login.strip()
 
-    slack_thread = configurable.get("slack_thread") or {}
-    email = configurable.get("user_email") or slack_thread.get("triggering_user_email")
+    email = configurable.get("user_email")
     return resolve_login_from_email(email if isinstance(email, str) else None)
 
 
