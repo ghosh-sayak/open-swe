@@ -14,12 +14,11 @@ from ..dashboard.plan_store import get_plan_content
 from ..utils.dashboard_links import dashboard_plan_url
 from ..utils.github_app import get_github_app_installation_token
 from ..utils.github_comments import derive_pr_state
-from ..utils.slack import get_slack_permalink
 
 logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
-_USER_TOKEN_SOURCES = ("slack", "dashboard")
+_USER_TOKEN_SOURCES = ("dashboard",)
 _REFERENCES_HEADING = "## References"
 
 
@@ -27,14 +26,13 @@ async def _resolve_pr_author_token() -> tuple[str | None, str]:
     """Return ``(token, kind)`` for opening the PR.
 
     Prefers the triggering user's OAuth token (so the PR is created *as them*)
-    for Slack/dashboard runs with a mapped GitHub login, resolving it by login
-    from the dashboard OAuth store. Falls back to the GitHub App installation
-    token (creator = open-swe[bot]) for GitHub-triggered runs, unmapped users,
-    or bot-token-only deployments — preserving today's behavior.
+    for dashboard runs with a mapped GitHub login, resolving it by login from
+    the dashboard OAuth store. Falls back to the GitHub App installation token
+    (creator = open-swe[bot]) for GitHub-triggered runs, unmapped users, or
+    bot-token-only deployments — preserving today's behavior.
 
     The token is resolved by login rather than read from the shared thread
-    metadata: Slack thread ids are shared across a conversation, so a cached
-    token could belong to a prior triggering user.
+    metadata so a cached token can't leak across triggering users.
     """
     configurable = get_config().get("configurable", {})
     source = configurable.get("source")
@@ -186,31 +184,6 @@ async def _plan_reference_line(configurable: dict[str, Any]) -> str | None:
     return f"- Plan: {plan_url}"
 
 
-async def _build_source_reference_lines(configurable: dict[str, Any]) -> list[str]:
-    """Build source reference lines for the run."""
-    source = configurable.get("source")
-    lines: list[str] = []
-
-    if source == "slack":
-        slack_thread = configurable.get("slack_thread") or {}
-        channel_id = slack_thread.get("channel_id")
-        thread_ts = slack_thread.get("thread_ts")
-        if channel_id and thread_ts:
-            permalink = await get_slack_permalink(channel_id, thread_ts)
-            if permalink:
-                lines.append(f"- Slack thread: {permalink}")
-    elif source == "linear":
-        linear_issue = configurable.get("linear_issue") or {}
-        url = linear_issue.get("url")
-        identifier = linear_issue.get("identifier")
-        if url:
-            lines.append(f"- Linear ticket: [{identifier or url}]({url})")
-        elif identifier:
-            lines.append(f"- Linear ticket: {identifier}")
-
-    return lines
-
-
 async def _is_private_repo(client: httpx.AsyncClient, token: str, owner: str, repo: str) -> bool:
     """Return True only when GitHub confirms the repo is private."""
     resp = await client.get(f"{GITHUB_API}/repos/{owner}/{repo}", headers=_auth_headers(token))
@@ -234,12 +207,6 @@ async def _maybe_append_references(
         plan_line = await _plan_reference_line(configurable)
         if plan_line:
             lines.append(plan_line)
-        try:
-            source_lines = await _build_source_reference_lines(configurable)
-            if source_lines and await _is_private_repo(client, token, owner, repo):
-                lines.extend(source_lines)
-        except Exception:
-            logger.debug("Failed to append source references to PR body", exc_info=True)
         if not lines:
             return body
         return f"{body.rstrip()}\n\n{_REFERENCES_HEADING}\n" + "\n".join(lines)

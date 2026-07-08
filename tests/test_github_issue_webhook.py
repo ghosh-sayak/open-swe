@@ -949,9 +949,7 @@ def test_trigger_pr_review_from_ref_creates_reviewer_run(monkeypatch) -> None:
                 number=1244,
                 url="https://github.com/langchain-ai/open-swe/pull/1244",
             ),
-            source="slack",
-            slack_channel_id="C123",
-            slack_thread_ts="1700000000.000100",
+            source="github",
         )
     )
 
@@ -967,14 +965,10 @@ def test_trigger_pr_review_from_ref_creates_reviewer_run(monkeypatch) -> None:
     assert captured["metadata_token"] == "app-token"
     assert "Base SHA: base-sha" in prompt
     assert "Head SHA: head-sha" in prompt
-    assert config["source"] == "slack"
+    assert config["source"] == "github"
     assert config["repo"] == {"owner": "langchain-ai", "name": "open-swe"}
     assert config["pr_number"] == 1244
     assert config["review_requested"] is True
-    assert config["slack_thread"] == {
-        "channel_id": "C123",
-        "thread_ts": "1700000000.000100",
-    }
     # The live head must be persisted to metadata so resolve_review_head_sha
     # doesn't return a stale head left by a prior push/ready dispatch.
     assert captured["set_metadata_kwargs"]["head_sha"] == "head-sha"
@@ -1024,15 +1018,11 @@ async def test_request_pr_review_tool_uses_shared_trigger(monkeypatch) -> None:
         source: str,
         github_login: str = "",
         github_user_id: int | None = None,
-        slack_channel_id: str = "",
-        slack_thread_ts: str = "",
     ) -> dict[str, object]:
         captured["pr_ref"] = pr_ref
         captured["source"] = source
         captured["github_login"] = github_login
         captured["github_user_id"] = github_user_id
-        captured["slack_channel_id"] = slack_channel_id
-        captured["slack_thread_ts"] = slack_thread_ts
         return {"success": True, "thread_id": "thread-id"}
 
     monkeypatch.setattr(
@@ -1046,7 +1036,6 @@ async def test_request_pr_review_tool_uses_shared_trigger(monkeypatch) -> None:
                 "source": "github",
                 "github_login": "octocat",
                 "github_user_id": 123,
-                "slack_thread": {"channel_id": "C123", "thread_ts": "1700000000.000100"},
             }
         },
     )
@@ -1059,8 +1048,6 @@ async def test_request_pr_review_tool_uses_shared_trigger(monkeypatch) -> None:
     assert captured["source"] == "github"
     assert captured["github_login"] == "octocat"
     assert captured["github_user_id"] == 123
-    assert captured["slack_channel_id"] == "C123"
-    assert captured["slack_thread_ts"] == "1700000000.000100"
     assert result["success"] is True
 
 

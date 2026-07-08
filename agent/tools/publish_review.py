@@ -18,7 +18,6 @@ from ..reviewer_findings import (
     get_thread_id_from_runtime,
     get_thread_last_reviewed_sha,
     get_thread_metadata,
-    get_thread_slack_ref,
     replace_findings,
     resolve_review_head_sha,
     set_reviewer_thread_metadata,
@@ -51,7 +50,6 @@ from ..utils.github_token import (
     invalidate_cached_github_token,
 )
 from ..utils.langsmith import get_langsmith_trace_url
-from ..utils.slack import post_slack_thread_reply
 from ..utils.tracing import REVIEW_TRACING_PROJECT
 
 
@@ -484,16 +482,6 @@ async def _publish_review_async(
         findings=await list_findings_async(thread_id),
     )
 
-    if not is_re_review:
-        await _maybe_post_slack_completion_reply(
-            thread_id=thread_id,
-            owner=owner,
-            repo=repo,
-            pr_number=pr_number,
-            review_id=review_id,
-            surfaced_count=len(inline_comments),
-        )
-
     await set_reviewer_thread_metadata(thread_id, last_reviewed_sha=head_sha)
     await clear_review_started_comment(thread_id=thread_id, owner=owner, repo=repo, token=token)
     conclusion, check_title, check_summary = review_check_conclusion(len(inline_comments))
@@ -828,40 +816,6 @@ async def _filter_against_pr_diff(
             if isinstance(finding_id, str):
                 dropped.append(finding_id)
     return valid, dropped
-
-
-async def _maybe_post_slack_completion_reply(
-    *,
-    thread_id: str,
-    owner: str,
-    repo: str,
-    pr_number: int,
-    review_id: int | None,
-    surfaced_count: int,
-) -> None:
-    """Post a one-line completion summary to the Slack thread that started this review.
-
-    Only fires for first reviews (gated by the caller). No-op if the reviewer
-    thread has no ``slack_thread`` metadata — i.e. the review wasn't started
-    from Slack.
-    """
-    metadata = await get_thread_metadata(thread_id)
-    slack_ref = get_thread_slack_ref(metadata)
-    if slack_ref is None:
-        return
-
-    if surfaced_count == 0:
-        headline = "*Open SWE Review*: No issues found."
-    else:
-        issue_word = "issue" if surfaced_count == 1 else "issues"
-        headline = f"*Open SWE Review* found {surfaced_count} potential {issue_word}."
-
-    review_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-    if isinstance(review_id, int):
-        review_url = f"{review_url}#pullrequestreview-{review_id}"
-    text = f"{headline} <{review_url}|View review>"
-
-    await post_slack_thread_reply(slack_ref["channel_id"], slack_ref["thread_ts"], text)
 
 
 async def _store_thread_ids_on_findings(
