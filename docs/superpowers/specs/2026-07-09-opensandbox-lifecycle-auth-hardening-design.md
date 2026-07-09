@@ -133,6 +133,18 @@ The deeper concern — a pooled/reused sandbox retaining a prior token or crossi
 an installation boundary — is bound up with pooling and is deferred to Spec 2,
 where pooling reuse is designed.
 
+**Considered and rejected — OpenSandbox Credential Vault.** OpenSandbox ships a
+native egress-sidecar "Credential Vault" (`CredentialProxyConfig` +
+`credential_vault.create(...)` bindings) that injects outbound GitHub auth so
+the token never lands in the sandbox's env/files/logs — functionally the same
+technique as langsmith's proxy, and a strictly better security model. It is
+**not adopted** because it is incompatible with the intended pooling model:
+vault credentials are bound at sandbox-create time, but pooled sandboxes are
+warmed before any thread (and therefore before its per-thread GitHub token)
+exists. Credentials must be written in *after* a pool claim, which is exactly
+what the file-API approach (item G) does. The vault is therefore out of scope
+here and in Spec 2.
+
 ### H — HTTPS-aware health probe
 
 `validate_startup_config` builds `http://{domain}/health` with a hardcoded
