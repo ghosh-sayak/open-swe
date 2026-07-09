@@ -157,6 +157,20 @@ async def refresh_proxy_token(
         from .sandbox_github_auth import configure_github_auth
 
         await asyncio.to_thread(configure_github_auth, current_backend, token)
+        # Absolute TTL: slide it on the same ~hourly cadence as token rotation so
+        # a long single run isn't reaped mid-run (langsmith gets this free via its
+        # idle TTL). Best-effort: the credentials already wrote, so a failed renew
+        # is logged, not fatal.
+        renew = getattr(current_backend, "renew_ttl", None)
+        if renew is not None:
+            try:
+                await asyncio.to_thread(renew)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to renew OpenSandbox TTL during mid-run refresh for thread %s",
+                    thread_id,
+                    exc_info=True,
+                )
     else:
         from ..integrations.langsmith import _configure_github_proxy
 

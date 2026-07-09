@@ -250,3 +250,58 @@ class TestRefreshGithubProxyMiddleware:
             result = await refresh_github_proxy_before_model.abefore_model({}, MagicMock())
 
         assert result is None
+
+
+class TestMidRunTtlRenewal:
+    @pytest.mark.asyncio
+    async def test_opensandbox_refresh_renews_ttl(self, monkeypatch) -> None:
+        now = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        record_proxy_token_expiry("thread-1", now + timedelta(minutes=1))
+
+        backend = MagicMock()
+        backend.id = "sbx-1"
+        backend.renew_ttl = MagicMock()
+        # SANDBOX_BACKENDS stores the proxy; unwrap returns it as-is for a MagicMock.
+        monkeypatch.setitem(github_proxy.SANDBOX_BACKENDS, "thread-1", backend)
+        monkeypatch.setattr(github_proxy, "unwrap_sandbox_backend", lambda b: b)
+
+        async def fake_token(**kwargs):
+            return "ghs_fresh", now + timedelta(hours=1)
+
+        monkeypatch.setattr(
+            github_proxy, "get_github_app_installation_token_with_expiry", fake_token
+        )
+        monkeypatch.setattr(github_proxy, "configure_github_auth", MagicMock(), raising=False)
+
+        with patch.dict("os.environ", {"SANDBOX_TYPE": "opensandbox"}):
+            # configure_github_auth is imported lazily inside the function; patch there too.
+            with patch("agent.utils.sandbox_github_auth.configure_github_auth", MagicMock()):
+                refreshed = await github_proxy.refresh_proxy_token("thread-1")
+
+        assert refreshed is True
+        backend.renew_ttl.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_renew_ttl_failure_is_nonfatal(self, monkeypatch) -> None:
+        now = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        record_proxy_token_expiry("thread-1", now + timedelta(minutes=1))
+
+        backend = MagicMock()
+        backend.id = "sbx-1"
+        backend.renew_ttl = MagicMock(side_effect=RuntimeError("renew failed"))
+        monkeypatch.setitem(github_proxy.SANDBOX_BACKENDS, "thread-1", backend)
+        monkeypatch.setattr(github_proxy, "unwrap_sandbox_backend", lambda b: b)
+
+        async def fake_token(**kwargs):
+            return "ghs_fresh", now + timedelta(hours=1)
+
+        monkeypatch.setattr(
+            github_proxy, "get_github_app_installation_token_with_expiry", fake_token
+        )
+
+        with patch.dict("os.environ", {"SANDBOX_TYPE": "opensandbox"}):
+            with patch("agent.utils.sandbox_github_auth.configure_github_auth", MagicMock()):
+                refreshed = await github_proxy.refresh_proxy_token("thread-1")
+
+        assert refreshed is True
+        backend.renew_ttl.assert_called_once()
