@@ -77,13 +77,19 @@ class TestConfigureGithubAuth:
         assert backend.commands == []
         assert backend.uploads == []
 
-    def test_raises_on_nonzero_exit(self) -> None:
+    def test_raises_on_nonzero_exit(self, monkeypatch) -> None:
+        import agent.utils.sandbox_github_auth as auth
+
+        monkeypatch.setattr(auth.time, "sleep", lambda _s: None)
         backend = _FakeBackend(exit_code=1)
 
         with pytest.raises(RuntimeError, match="Failed to register git include"):
             configure_github_auth(backend, "ghs_token123")
 
-    def test_raises_when_upload_fails(self) -> None:
+    def test_raises_when_upload_fails(self, monkeypatch) -> None:
+        import agent.utils.sandbox_github_auth as auth
+
+        monkeypatch.setattr(auth.time, "sleep", lambda _s: None)
         backend = _FakeBackend()
         backend.upload_error = "disk full"
 
@@ -92,6 +98,54 @@ class TestConfigureGithubAuth:
 
         # Must not leak the underlying error detail (could echo file content).
         assert backend.commands == []
+
+
+class TestConfigureGithubAuthRetry:
+    def test_retries_then_succeeds(self, monkeypatch) -> None:
+        import agent.utils.sandbox_github_auth as auth
+
+        monkeypatch.setattr(auth.time, "sleep", lambda _s: None)
+        backend = _FakeBackend()
+        # Fail the upload once, then succeed.
+        calls = {"n": 0}
+        real_upload = backend.upload_files
+
+        def flaky_upload(files):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                backend.upload_error = "boom"
+                try:
+                    return real_upload(files)
+                finally:
+                    backend.upload_error = None
+            return real_upload(files)
+
+        backend.upload_files = flaky_upload
+
+        configure_github_auth(backend, "ghs_token123")
+
+        assert calls["n"] == 2  # one failure, one success
+
+    def test_raises_after_exhausting_retries(self, monkeypatch) -> None:
+        import agent.utils.sandbox_github_auth as auth
+
+        monkeypatch.setattr(auth.time, "sleep", lambda _s: None)
+        backend = _FakeBackend()
+        backend.upload_error = "always"
+        # Count attempts to prove the loop exhausts exactly AUTH_CONFIG_MAX_ATTEMPTS.
+        calls = {"n": 0}
+        real_upload = backend.upload_files
+
+        def counting_upload(files):
+            calls["n"] += 1
+            return real_upload(files)
+
+        backend.upload_files = counting_upload
+
+        with pytest.raises(RuntimeError, match="Failed to write GitHub credential files"):
+            configure_github_auth(backend, "ghs_token123")
+
+        assert calls["n"] == auth.AUTH_CONFIG_MAX_ATTEMPTS == 3
 
 
 class TestCreateSandboxWithProxyOpensandbox:

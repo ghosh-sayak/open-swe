@@ -12,14 +12,21 @@ section behind and the bot identity in ~/.gitconfig is never touched.
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 
 from deepagents.backends.protocol import SandboxBackendProtocol
+
+logger = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-]+")
 
 INSTEADOF_INCLUDE_PATH = "/root/.config/git/insteadof.gitconfig"
 GH_HOSTS_PATH = "/root/.config/gh/hosts.yml"
+
+AUTH_CONFIG_MAX_ATTEMPTS = 3
+AUTH_CONFIG_RETRY_DELAYS = (0.5, 1.0)
 
 
 def _credential_files(token: str) -> list[tuple[str, bytes]]:
@@ -40,12 +47,7 @@ def _credential_files(token: str) -> list[tuple[str, bytes]]:
     ]
 
 
-def configure_github_auth(sandbox_backend: SandboxBackendProtocol, token: str) -> None:
-    """Write git + gh credentials into the sandbox via the file API."""
-    if not _TOKEN_RE.fullmatch(token):
-        # Defense in depth: never let an unexpected value reach a file/command.
-        raise ValueError("GitHub token contains unexpected characters; refusing to write it")
-
+def _write_credentials_once(sandbox_backend: SandboxBackendProtocol, token: str) -> None:
     responses = sandbox_backend.upload_files(_credential_files(token))
     failed = [r.path for r in responses if r.error]
     if failed:
@@ -64,3 +66,27 @@ def configure_github_auth(sandbox_backend: SandboxBackendProtocol, token: str) -
             f"Failed to register git include in sandbox {sandbox_backend.id} "
             f"(exit code {result.exit_code})"
         )
+
+
+def configure_github_auth(sandbox_backend: SandboxBackendProtocol, token: str) -> None:
+    """Write git + gh credentials into the sandbox via the file API, with retry."""
+    if not _TOKEN_RE.fullmatch(token):
+        # Defense in depth: never let an unexpected value reach a file/command.
+        raise ValueError("GitHub token contains unexpected characters; refusing to write it")
+
+    for attempt in range(AUTH_CONFIG_MAX_ATTEMPTS):
+        try:
+            _write_credentials_once(sandbox_backend, token)
+            return
+        except RuntimeError:
+            if attempt == AUTH_CONFIG_MAX_ATTEMPTS - 1:
+                raise
+            delay = AUTH_CONFIG_RETRY_DELAYS[min(attempt, len(AUTH_CONFIG_RETRY_DELAYS) - 1)]
+            logger.warning(
+                "GitHub auth write failed for sandbox %s (attempt %d/%d); retrying in %.1fs",
+                sandbox_backend.id,
+                attempt + 1,
+                AUTH_CONFIG_MAX_ATTEMPTS,
+                delay,
+            )
+            time.sleep(delay)
