@@ -6,6 +6,7 @@ integration module is loaded in isolation, mirroring test_daytona_integration.py
 
 import importlib.util
 import sys
+import threading
 import types
 from datetime import timedelta
 from pathlib import Path
@@ -245,6 +246,12 @@ def _load_opensandbox_module(monkeypatch):
     return module
 
 
+def _make_backend_sandbox(osb, *, exit_code=0, stdout=None, stderr=None):
+    sandbox = _FakeSandboxSync(sandbox_id="uuid-exec")
+    sandbox.next_execution = _FakeExecution(exit_code, stdout=stdout, stderr=stderr)
+    return sandbox
+
+
 @pytest.fixture
 def osb(monkeypatch):
     monkeypatch.setenv("OPEN_SANDBOX_API_KEY", "test-key")
@@ -412,6 +419,43 @@ def test_execute_command_timeout_env_override(osb, monkeypatch):
 
     _command, opts = backend._sandbox.run_calls[-1]
     assert opts.timeout == timedelta(seconds=600)
+
+
+# --------------------------------------------------------------------------- #
+# aexecute: client-side deadline + async offload (items A/B)                  #
+# --------------------------------------------------------------------------- #
+def test_aexecute_returns_output(osb):
+    import asyncio
+
+    backend_sandbox = _make_backend_sandbox(osb, stdout=["hello"])
+    backend = osb.OpensandboxBackend(backend_sandbox)
+
+    result = asyncio.run(backend.aexecute("echo hello"))
+
+    assert result.exit_code == 0
+    assert result.output == "hello"
+
+
+def test_aexecute_returns_124_on_client_deadline(osb, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("OPEN_SANDBOX_EXECUTE_CLIENT_GRACE_SECONDS", "0")
+    backend_sandbox = _make_backend_sandbox(osb, stdout=["never"])
+    backend = osb.OpensandboxBackend(backend_sandbox)
+
+    blocked = threading.Event()
+
+    def _hang(command, effective):
+        blocked.wait()  # blocks forever; the deadline must fire
+
+    monkeypatch.setattr(backend, "_run_blocking", _hang)
+
+    # timeout=1 -> effective=1, grace=0 -> client deadline ~1s
+    result = asyncio.run(backend.aexecute("sleep 999", timeout=1))
+    blocked.set()  # release the abandoned worker so the test process can exit
+
+    assert result.exit_code == 124
+    assert "deadline" in result.output.lower()
 
 
 # --------------------------------------------------------------------------- #

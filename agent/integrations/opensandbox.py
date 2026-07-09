@@ -8,10 +8,13 @@ inside the sandbox image.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import posixpath
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from datetime import timedelta
 
 import httpx
@@ -42,6 +45,7 @@ DEFAULT_PROTOCOL = "http"
 DEFAULT_IMAGE = "open-swe-sandbox:latest"
 DEFAULT_TTL_SECONDS = 7200
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 1800
+DEFAULT_EXECUTE_CLIENT_GRACE_SECONDS = 30
 DEFAULT_CPU = "2"
 DEFAULT_MEMORY = "4Gi"
 HEALTH_PROBE_TIMEOUT_SECONDS = 5.0
@@ -132,16 +136,24 @@ class OpensandboxBackend(BaseSandbox):
         self._command_timeout_seconds = _parse_int_env(
             "OPEN_SANDBOX_COMMAND_TIMEOUT_SECONDS", DEFAULT_COMMAND_TIMEOUT_SECONDS, positive=True
         )
+        grace = _parse_int_env(
+            "OPEN_SANDBOX_EXECUTE_CLIENT_GRACE_SECONDS",
+            DEFAULT_EXECUTE_CLIENT_GRACE_SECONDS,
+        )
+        if grace < 0:
+            raise ValueError("OPEN_SANDBOX_EXECUTE_CLIENT_GRACE_SECONDS must be >= 0")
+        self._execute_client_grace_seconds = grace
 
     @property
     def id(self) -> str:
         return self._sandbox.id
 
-    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        # Always enforce a server-side command timeout: the sync SSE read has no
-        # client-side deadline, so an unbounded command would pin a worker thread.
-        # timeout=0 means "no timeout" to deepagents' execute tool — cap it too.
-        effective = timeout if timeout else self._command_timeout_seconds
+    def _effective_timeout(self, timeout: int | None) -> int:
+        # timeout=0/None means "no client timeout" to deepagents; we still cap
+        # it to the configured command timeout so a command can't run unbounded.
+        return timeout if timeout else self._command_timeout_seconds
+
+    def _run_blocking(self, command: str, effective: int) -> ExecuteResponse:
         execution = self._sandbox.commands.run(
             command,
             opts=RunCommandOpts(timeout=timedelta(seconds=effective)),
@@ -152,6 +164,49 @@ class OpensandboxBackend(BaseSandbox):
             output="\n".join(chunks),
             exit_code=execution.exit_code,
             truncated=False,
+        )
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        return self._run_blocking(command, self._effective_timeout(timeout))
+
+    def _run_blocking_with_deadline(
+        self, command: str, effective: int, deadline: int
+    ) -> ExecuteResponse:
+        # A dedicated single-use pool, not asyncio's shared default executor:
+        # future.result(timeout=...) returns/raises on the deadline regardless
+        # of whether the submitted call ever finishes, and shutdown(wait=False)
+        # abandons the worker without joining it. Using the default executor
+        # here instead would let a wedged command pin one of its slots for the
+        # life of the process (starving every other asyncio.to_thread caller)
+        # and would make asyncio.run()'s loop teardown block on the join.
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="osb-exec")
+        try:
+            future = pool.submit(self._run_blocking, command, effective)
+            try:
+                return future.result(timeout=deadline)
+            except FuturesTimeout:
+                logger.warning(
+                    "OpenSandbox command exceeded client deadline of %ss; abandoning worker",
+                    deadline,
+                )
+                return ExecuteResponse(
+                    output=(
+                        f"Command exceeded the client-side deadline of {deadline}s "
+                        "and was abandoned."
+                    ),
+                    exit_code=124,
+                    truncated=False,
+                )
+        finally:
+            # Never join: a still-wedged worker must not block the caller. The
+            # server-side RunCommandOpts timeout remains the real enforcement.
+            pool.shutdown(wait=False)
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        effective = self._effective_timeout(timeout)
+        deadline = effective + self._execute_client_grace_seconds
+        return await asyncio.to_thread(
+            self._run_blocking_with_deadline, command, effective, deadline
         )
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
