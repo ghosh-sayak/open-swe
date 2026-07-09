@@ -544,6 +544,20 @@ def test_validate_startup_probes_health(osb, monkeypatch):
     assert probed["url"] == "http://localhost:8090/health"
 
 
+def test_validate_startup_probes_health_https(osb, monkeypatch):
+    monkeypatch.setenv("OPEN_SANDBOX_PROTOCOL", "https")
+    probed = {}
+
+    def fake_probe(url):
+        probed["url"] = url
+
+    monkeypatch.setattr(osb, "_probe_health", fake_probe)
+
+    osb.validate_startup_config()
+
+    assert probed["url"] == "https://localhost:8090/health"
+
+
 def test_validate_startup_raises_on_unreachable(osb, monkeypatch):
     def fake_probe(url):
         raise RuntimeError("connection refused")

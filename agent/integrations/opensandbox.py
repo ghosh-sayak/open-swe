@@ -38,6 +38,7 @@ from opensandbox.sync import SandboxSync
 logger = logging.getLogger(__name__)
 
 DEFAULT_DOMAIN = "localhost:8080"
+DEFAULT_PROTOCOL = "http"
 DEFAULT_IMAGE = "open-swe-sandbox:latest"
 DEFAULT_TTL_SECONDS = 7200
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 1800
@@ -80,10 +81,15 @@ def _get_domain() -> str:
     return os.environ.get("OPEN_SANDBOX_DOMAIN", DEFAULT_DOMAIN)
 
 
+def _get_protocol() -> str:
+    return os.environ.get("OPEN_SANDBOX_PROTOCOL", DEFAULT_PROTOCOL)
+
+
 def _connection_config() -> ConnectionConfigSync:
     return ConnectionConfigSync(
         domain=_get_domain(),
         api_key=_require_api_key(),
+        protocol=_get_protocol(),
         use_server_proxy=_parse_bool_env("OPEN_SANDBOX_USE_SERVER_PROXY"),
     )
 
@@ -286,7 +292,7 @@ def validate_startup_config() -> None:
     _parse_int_env(
         "OPEN_SANDBOX_COMMAND_TIMEOUT_SECONDS", DEFAULT_COMMAND_TIMEOUT_SECONDS, positive=True
     )
-    url = f"http://{_get_domain()}/health"
+    url = f"{_get_protocol()}://{_get_domain()}/health"
     try:
         _probe_health(url)
     except Exception as e:
