@@ -264,6 +264,8 @@ def osb(monkeypatch):
     monkeypatch.delenv("OPEN_SANDBOX_MEMORY", raising=False)
     monkeypatch.delenv("OPEN_SANDBOX_POOL_ENABLED", raising=False)
     monkeypatch.delenv("OPEN_SANDBOX_POOL_REF", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_PROTOCOL", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_EXECUTE_CLIENT_GRACE_SECONDS", raising=False)
     _FakeSandboxPoolSync.instances.clear()
     return _load_opensandbox_module(monkeypatch)
 

@@ -271,7 +271,6 @@ class TestMidRunTtlRenewal:
         monkeypatch.setattr(
             github_proxy, "get_github_app_installation_token_with_expiry", fake_token
         )
-        monkeypatch.setattr(github_proxy, "configure_github_auth", MagicMock(), raising=False)
 
         with patch.dict("os.environ", {"SANDBOX_TYPE": "opensandbox"}):
             # configure_github_auth is imported lazily inside the function; patch there too.
