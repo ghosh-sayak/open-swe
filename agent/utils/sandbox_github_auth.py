@@ -1,12 +1,13 @@
-"""Shared hosts.yml GitHub auth for providers without a GitHub proxy (plan D3).
+"""Shared GitHub auth for sandboxes without a GitHub proxy (plan D3).
 
 Mirrors the daytona-proven pattern: the prompts always run `GH_TOKEN=dummy gh`,
 and the sandbox image ships a gh wrapper that strips that dummy token so gh
 falls back to the hosts.yml written here. Real git traffic authenticates via
 the insteadOf credential rewrite. Called after create/claim and on every
-refresh; because the token is embedded in the insteadOf *section name*, stale
-x-access-token sections are removed first — otherwise git keeps resolving to
-the first (expired) token after rotation.
+refresh; the token travels only in file *content*, written via the sandbox's
+file-upload API. The insteadOf rule lives in a dedicated git include file that
+is rewritten wholesale on every call, so a rotated token never leaves a stale
+section behind and the bot identity in ~/.gitconfig is never touched.
 """
 
 from __future__ import annotations
@@ -17,33 +18,49 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-]+")
 
-_REMOVE_STALE_SECTIONS = (
-    "for s in $(git config --global --name-only --get-regexp "
-    "'^url\\.https://x-access-token:.*\\.insteadof$' 2>/dev/null "
-    "| sed 's/\\.insteadof$//'); do "
-    'git config --global --remove-section "$s" || true; done'
-)
+INSTEADOF_INCLUDE_PATH = "/root/.config/git/insteadof.gitconfig"
+GH_HOSTS_PATH = "/root/.config/gh/hosts.yml"
+
+
+def _credential_files(token: str) -> list[tuple[str, bytes]]:
+    """Build the (path, content) pairs written into the sandbox.
+
+    The token lives only in file *content* (never on a command line). The
+    insteadOf rule goes in a dedicated include file that is rewritten wholesale
+    on every call, so a rotated token cannot leave a stale section behind and
+    the bot identity in ~/.gitconfig is never touched.
+    """
+    insteadof = (
+        f'[url "https://x-access-token:{token}@github.com/"]\n\tinsteadOf = https://github.com/\n'
+    )
+    hosts = f"github.com:\n  oauth_token: {token}\n  git_protocol: https\n  user: x-access-token\n"
+    return [
+        (INSTEADOF_INCLUDE_PATH, insteadof.encode()),
+        (GH_HOSTS_PATH, hosts.encode()),
+    ]
 
 
 def configure_github_auth(sandbox_backend: SandboxBackendProtocol, token: str) -> None:
-    """Write git + gh credentials into the sandbox via the exec channel."""
+    """Write git + gh credentials into the sandbox via the file API."""
     if not _TOKEN_RE.fullmatch(token):
-        # Never interpolate an unexpected value into a shell command / printf format.
+        # Defense in depth: never let an unexpected value reach a file/command.
         raise ValueError("GitHub token contains unexpected characters; refusing to write it")
-    setup_commands = " && ".join(
-        [
-            _REMOVE_STALE_SECTIONS,
-            f"git config --global url.'https://x-access-token:{token}@github.com/'"
-            f".insteadOf 'https://github.com/'",
-            "mkdir -p /root/.config/gh",
-            f"printf 'github.com:\\n  oauth_token: {token}\\n  git_protocol: https\\n"
-            f"  user: x-access-token\\n' > /root/.config/gh/hosts.yml",
-        ]
-    )
-    result = sandbox_backend.execute(setup_commands)
-    if result.exit_code != 0:
-        # Deliberately omits command output: a shell error could echo the token.
+
+    responses = sandbox_backend.upload_files(_credential_files(token))
+    failed = [r.path for r in responses if r.error]
+    if failed:
+        # Deliberately omits error detail: it could echo file content.
         raise RuntimeError(
-            f"Failed to configure GitHub auth in sandbox {sandbox_backend.id} "
+            f"Failed to write GitHub credential files in sandbox {sandbox_backend.id}: {failed}"
+        )
+
+    # Register the include file. Token-free and identity-safe: --replace-all sets
+    # this single include.path without rewriting the rest of ~/.gitconfig.
+    result = sandbox_backend.execute(
+        f'git config --global --replace-all include.path "{INSTEADOF_INCLUDE_PATH}"'
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"Failed to register git include in sandbox {sandbox_backend.id} "
             f"(exit code {result.exit_code})"
         )

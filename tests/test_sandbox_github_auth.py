@@ -5,23 +5,29 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import ExecuteResponse, FileUploadResponse
 
 from agent.utils.sandbox_github_auth import configure_github_auth
 
 
 class _FakeBackend:
-    """Minimal sandbox backend capturing execute() calls; no renew_ttl."""
+    """Minimal sandbox backend capturing execute() + upload_files() calls."""
 
     id = "uuid-fake"
 
     def __init__(self, exit_code: int = 0):
         self.exit_code = exit_code
         self.commands: list[str] = []
+        self.uploads: list[list[tuple[str, bytes]]] = []
+        self.upload_error: str | None = None
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.commands.append(command)
         return ExecuteResponse(output="", exit_code=self.exit_code)
+
+    def upload_files(self, files):
+        self.uploads.append(files)
+        return [FileUploadResponse(path=p, error=self.upload_error) for p, _ in files]
 
 
 class _RenewableFakeBackend(_FakeBackend):
@@ -34,30 +40,33 @@ class _RenewableFakeBackend(_FakeBackend):
 
 
 class TestConfigureGithubAuth:
-    def test_writes_insteadof_and_hosts_yml(self) -> None:
+    def test_writes_credentials_via_file_api(self) -> None:
         backend = _FakeBackend()
 
         configure_github_auth(backend, "ghs_token123")
 
-        assert len(backend.commands) == 1
-        command = backend.commands[0]
-        parts = command.split(" && ")
-        assert len(parts) == 4
-        # Rotation safety: stale x-access-token url sections are removed first,
-        # otherwise git resolves insteadOf to the FIRST (expired) section forever.
-        assert "--get-regexp" in parts[0]
-        assert "x-access-token" in parts[0]
-        assert "--remove-section" in parts[0]
-        assert (
-            "git config --global "
-            "url.'https://x-access-token:ghs_token123@github.com/'.insteadOf "
-            "'https://github.com/'"
-        ) == parts[1]
-        assert parts[2] == "mkdir -p /root/.config/gh"
-        assert "oauth_token: ghs_token123" in parts[3]
-        assert "user: x-access-token" in parts[3]
-        assert "git_protocol: https" in parts[3]
-        assert "> /root/.config/gh/hosts.yml" in parts[3]
+        # Exactly one upload batch with the two credential files.
+        assert len(backend.uploads) == 1
+        written = dict(backend.uploads[0])
+        assert set(written) == {
+            "/root/.config/git/insteadof.gitconfig",
+            "/root/.config/gh/hosts.yml",
+        }
+        insteadof = written["/root/.config/git/insteadof.gitconfig"].decode()
+        assert "x-access-token:ghs_token123@github.com" in insteadof
+        assert "insteadOf = https://github.com/" in insteadof
+        hosts = written["/root/.config/gh/hosts.yml"].decode()
+        assert "oauth_token: ghs_token123" in hosts
+        assert "user: x-access-token" in hosts
+
+    def test_token_never_appears_on_a_command_line(self) -> None:
+        backend = _FakeBackend()
+
+        configure_github_auth(backend, "ghs_token123")
+
+        # The only exec call registers the include file and must be token-free.
+        assert all("ghs_token123" not in cmd for cmd in backend.commands)
+        assert any("include.path" in cmd for cmd in backend.commands)
 
     def test_rejects_token_with_unexpected_characters(self) -> None:
         backend = _FakeBackend()
@@ -66,12 +75,23 @@ class TestConfigureGithubAuth:
             configure_github_auth(backend, "bad'token$(reboot)")
 
         assert backend.commands == []
+        assert backend.uploads == []
 
     def test_raises_on_nonzero_exit(self) -> None:
         backend = _FakeBackend(exit_code=1)
 
-        with pytest.raises(RuntimeError, match="GitHub auth"):
+        with pytest.raises(RuntimeError, match="Failed to register git include"):
             configure_github_auth(backend, "ghs_token123")
+
+    def test_raises_when_upload_fails(self) -> None:
+        backend = _FakeBackend()
+        backend.upload_error = "disk full"
+
+        with pytest.raises(RuntimeError, match="Failed to write GitHub credential files"):
+            configure_github_auth(backend, "ghs_token123")
+
+        # Must not leak the underlying error detail (could echo file content).
+        assert backend.commands == []
 
 
 class TestCreateSandboxWithProxyOpensandbox:

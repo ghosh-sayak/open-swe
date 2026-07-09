@@ -90,7 +90,7 @@ def test_download_missing_file_partial_success(backend):
 
 def test_github_auth_rotation_resolves_to_newest_token(backend):
     """Refresh with a rotated token must win: git resolves insteadOf to the NEW token."""
-    from agent.utils.sandbox_github_auth import configure_github_auth
+    from agent.utils.sandbox_github_auth import INSTEADOF_INCLUDE_PATH, configure_github_auth
 
     configure_github_auth(backend, "ghs_OLDTOKEN000000")
     configure_github_auth(backend, "ghs_NEWTOKEN111111")
@@ -100,21 +100,27 @@ def test_github_auth_rotation_resolves_to_newest_token(backend):
     assert "ghs_NEWTOKEN111111" in resolved.output
     assert "ghs_OLDTOKEN000000" not in resolved.output
 
+    # The insteadOf section now lives in the dedicated include file, which is
+    # rewritten wholesale on every call, so exactly one section resolves. Note:
+    # no --global here — that flag restricts the read to literally ~/.gitconfig
+    # and does not follow include.path, so it would never see this section.
     sections = backend.execute(
-        "git config --global --name-only --get-regexp "
+        "git config --name-only --get-regexp "
         "'^url\\.https://x-access-token:.*\\.insteadof$' | wc -l"
     )
     assert sections.output.strip() == "1", sections.output
+
+    # include.path itself must also stay a single entry across repeated calls;
+    # --replace-all in configure_github_auth is what guarantees this.
+    includes = backend.execute("git config --global --get-all include.path | wc -l")
+    assert includes.output.strip() == "1", includes.output
 
     hosts = backend.execute("cat /root/.config/gh/hosts.yml")
     assert "ghs_NEWTOKEN111111" in hosts.output
     assert "ghs_OLDTOKEN000000" not in hosts.output
 
-    backend.execute(
-        "for s in $(git config --global --name-only --get-regexp "
-        "'^url\\.https://x-access-token:.*\\.insteadof$' 2>/dev/null "
-        "| sed 's/\\.insteadof$//'); do git config --global --remove-section \"$s\"; done"
-    )
+    backend.execute("git config --global --unset-all include.path")
+    backend.execute(f"rm -f {INSTEADOF_INCLUDE_PATH}")
 
 
 def test_reconnect_by_id_and_renew(backend):
